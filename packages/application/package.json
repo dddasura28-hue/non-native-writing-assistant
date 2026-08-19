@@ -1,5 +1,5 @@
 {
-  "name": "@non-native-writing/core",
+  "name": "@non-native-writing/application",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,5 +10,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@non-native-writing/core": "workspace:*"
   }
 }

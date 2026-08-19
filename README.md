@@ -4,4 +4,4 @@ An author-first writing assistant for composing directly in a non-native languag
 
 ## Development status
 
-The project is in its first implementation phase. The host-independent TypeScript core and its unit tests are being established; no Obsidian integration, UI, or AI-provider integration has been added yet.
+The project is in its early implementation phase. The host-independent TypeScript core and asynchronous application orchestration are established with deterministic tests; no Obsidian integration, UI, or real AI-provider integration has been added yet.

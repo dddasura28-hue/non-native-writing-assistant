@@ -15,6 +15,12 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(vite@8.2.1)
 
+  packages/application:
+    dependencies:
+      '@non-native-writing/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core: {}
 
 packages:

@@ -3,8 +3,8 @@
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "scripts": {
-    "test": "pnpm --filter @non-native-writing/core test",
-    "typecheck": "pnpm --filter @non-native-writing/core typecheck"
+    "test": "pnpm --recursive test",
+    "typecheck": "pnpm --recursive typecheck"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
