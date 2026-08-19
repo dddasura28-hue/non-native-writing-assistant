@@ -1,0 +1,13 @@
+{
+  "name": "non-native-writing-assistant",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "test": "pnpm --filter @non-native-writing/core test",
+    "typecheck": "pnpm --filter @non-native-writing/core typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

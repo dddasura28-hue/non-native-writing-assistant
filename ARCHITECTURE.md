@@ -174,7 +174,7 @@ A diagnostic is a host-neutral processor output. It may be represented as derive
 - an optional suggested replacement; and
 - an optional severity.
 
-A segment-relative range conceptually contains a start offset and an end offset measured within the source text of a particular writing segment revision. Implementations must use one documented offset convention and validate that the range is ordered and within that segment. The exact TypeScript shape is intentionally deferred.
+A segment-relative range conceptually contains a start offset and an end offset measured within the source text of a particular writing segment revision. Offsets use UTF-16 code units and ranges are half-open: `[start, end)`. Implementations must validate that the range is ordered and within that segment. The exact TypeScript shape is intentionally deferred.
 
 Host adapters map segment-relative ranges to their editor or document positions. Host editor positions and range types must not enter core diagnostic data.
 
