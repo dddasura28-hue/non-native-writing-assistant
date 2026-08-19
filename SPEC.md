@@ -1,0 +1,137 @@
+# Product Specification
+
+## Product problem
+
+People writing in a non-native language often know what they want to say but cannot yet express it naturally, accurately, or at the desired level of formality. Conventional translation tools encourage them to compose somewhere else in their native language and then translate a finished thought. That interrupts writing, hides uncertainty, and makes the translated result feel detached from the author's developing text.
+
+This product helps users compose directly in a non-native target language. A draft may contain target-language text, native-language fragments, placeholders, and incomplete thoughts. The system interprets that unfinished source, makes its understanding visible when useful, and proposes natural target-language expression without taking control of the draft.
+
+## Product philosophy
+
+- The user remains the author. Assistance should preserve agency rather than turn writing into an opaque translation step.
+- Source text is the only authoritative representation of the actual draft. Everything produced by AI is derived from it or from user-confirmed intent.
+- Uncertainty should be visible. When the system may have misunderstood the user, the native-language intent track provides a way to inspect and correct that understanding.
+- Suggestions never silently replace source text. Applying a suggestion is a distinct user action, and the affected source range must be clear.
+- Mixed-language and unfinished text are valid input states, not errors that must be cleaned up before assistance begins.
+- Assistance is adjustable. Users decide how much help they want, which representations they see, and what style they are aiming for.
+- Representations are extensible tracks. Native intent and normalized expression are the first derived tracks, not permanent limits on the product.
+- The product is host- and provider-independent in concept. Obsidian is the first host, and any particular language model is an implementation choice.
+
+## Key user flows
+
+### 1. Write directly in the target language
+
+The user starts or resumes a writing session and edits source text in Obsidian. They may write fluent target-language passages, mix in native-language words, or leave incomplete phrases. Source edits remain ordinary user edits and immediately become the latest truth for analysis.
+
+### 2. Inspect assistance tracks
+
+According to the active assistance policy, the system analyzes a relevant segment of the source and may show:
+
+- a native-language intent track describing what it believes the user means; and
+- a normalized target-language expression that conveys that intent naturally and correctly.
+
+The user can show or hide each optional track independently. A track that is hidden may still be available to processors when policy and privacy settings allow it; visibility and processing are separate controls and must be presented clearly.
+
+### 3. Correct misunderstood intent
+
+If the native-language intent is wrong, the user can edit it. That edit records user-confirmed intent for the current source revision and can trigger regeneration of downstream tracks. It does not modify the source and does not replace the source as the record of what is actually written. A later source edit must cause the system to revalidate or invalidate the confirmed intent rather than assume it is still current.
+
+### 4. Apply a suggestion deliberately
+
+The user reviews a normalized expression and explicitly chooses to apply all or part of it to a clearly identified source range. The system verifies that the source has not changed since the suggestion was produced. The host performs the edit through its normal editing and undo mechanisms. The resulting text is a new source revision, and dependent outputs are recomputed or invalidated.
+
+### 5. Adjust assistance and writing goals
+
+The user can change assistance strength, track visibility, and a writing style profile containing choices such as tone, register, verbosity, audience, and genre conventions. Assistance levels resolve to named policies; they are not direct model parameters. Changes that affect processor inputs create a new analysis context and make incompatible in-flight or cached results stale.
+
+## MVP scope
+
+The MVP is an Obsidian-hosted writing experience with a reusable TypeScript core. It includes:
+
+- writing sessions over source text exposed by the host;
+- stable-enough writing segments for analysis and targeted application of suggestions;
+- a required source track and optional native-intent and normalized-expression tracks;
+- support for target language and native language selection;
+- independent visibility controls for optional tracks;
+- user-editable native intent with explicit provenance;
+- configurable assistance policies selected through a simple assistance-strength control;
+- configurable style profiles covering at least tone, register, and verbosity, with room for additional attributes;
+- processor-based generation of native intent and normalized expression;
+- a provider-neutral language-model boundary;
+- cancellation, version tracking, stale-result rejection, and visible error or pending states;
+- explicit application of suggestions to source text with revision checks; and
+- host-appropriate persistence of user settings and the minimum session metadata needed to restore the experience.
+
+The initial product may use one provider adapter and one Obsidian adapter, but neither defines the core domain model.
+
+## Explicit non-goals
+
+- Acting primarily as a general-purpose translation tool for completed documents.
+- Automatically rewriting or replacing source text without a user action.
+- Treating AI output as authoritative or silently resolving ambiguous intent.
+- Building a complete word processor, document-management system, or collaboration platform.
+- Supporting every possible host application in the MVP.
+- Providing every future track, including academic review, deep explanations, or full-document consistency analysis, in the MVP.
+- Encoding provider SDK types, Obsidian APIs, prompts, or UI layout assumptions in the core domain.
+- Training or fine-tuning a proprietary language model as part of the MVP.
+
+## Terminology
+
+**Writing session**  
+The product context in which a user composes source text with a chosen language setup, assistance policy, style profile, and visible tracks.
+
+**Writing segment**  
+A versioned, addressable portion of a writing session used as the unit of analysis and suggestion application. Its exact granularity is an implementation decision, but its identity must not depend on Obsidian types.
+
+**Track**  
+A typed representation associated with a writing segment. Tracks share common lifecycle and provenance concepts so new representations can be added without creating new hard-coded UI fields.
+
+**Source track / source text**  
+The required, user-authored track containing what is actually in the draft. It is the source of truth.
+
+**Derived track**  
+A non-authoritative representation computed from versioned inputs. It may be generated by AI or another processor and may be invalidated when an input changes.
+
+**Native-language intent**  
+An optional track expressing the system's interpretation of the user's meaning in the user's native language. A user may correct it to provide confirmed intent for downstream processing.
+
+**Normalized target-language expression**  
+An optional track proposing a grammatical, natural target-language rendering of the current inferred or confirmed intent. “Normalized” does not mean flattening the user's voice into one universal style.
+
+**Suggestion**  
+A proposed change or expression that has not modified source text.
+
+**Apply**  
+An explicit user command that requests a suggestion be written to a specified source range after a revision check.
+
+**Assistance strength**  
+A user-facing choice that selects an assistance policy. It is not itself a collection of scattered numeric thresholds.
+
+**Assist policy**  
+A named, configurable set of rules governing which processors run, when they run, which inputs and outputs they use, and how proactive assistance may be.
+
+**Style profile**  
+A structured, extensible description of the desired target-language expression, such as tone, register, verbosity, audience, genre, locale conventions, or terminology constraints.
+
+**Processor**  
+A composable unit that consumes versioned session or track inputs and produces track updates, suggestions, or diagnostics without directly editing source text.
+
+**Provider adapter**  
+An integration that implements provider-neutral language-model capabilities using a specific service or local model.
+
+**Host adapter**  
+An integration between product use cases and a host application's text, storage, lifecycle, and editing facilities. Obsidian is the first host.
+
+## Future possibilities
+
+- Explanations of grammar, word choice, pragmatics, and differences between source and normalized expression.
+- Multiple alternative expressions with explicit tradeoffs.
+- Terminology suggestions, glossaries, and domain-specific constraints.
+- Reusable style profiles, organization profiles, and style variants.
+- Academic writing assistance, citation-aware guidance, and discipline-specific conventions.
+- Cross-segment terminology, voice, and consistency checks.
+- Learning-oriented feedback that adapts to recurring user needs without taking over authorship.
+- Additional deterministic and AI-backed processors composed into task-specific pipelines.
+- Browser extension, VS Code extension, and desktop application host adapters.
+- Multiple model providers, local models, capability-based routing, and privacy-sensitive execution policies.
+
