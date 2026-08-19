@@ -1,0 +1,44 @@
+.nnwa-panel {
+  --nnwa-card-background: var(--background-secondary);
+  --nnwa-border: var(--background-modifier-border);
+  padding: var(--size-4-3);
+}
+
+.nnwa-panel__heading {
+  margin-block: 0 var(--size-4-2);
+}
+
+.nnwa-panel__status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: var(--size-4-4);
+}
+
+.nnwa-panel__section {
+  margin-bottom: var(--size-4-5);
+}
+
+.nnwa-panel__section-title {
+  font-size: var(--font-ui-medium);
+  margin-block: 0 var(--size-4-2);
+}
+
+.nnwa-panel__track {
+  background: var(--nnwa-card-background);
+  border: 1px solid var(--nnwa-border);
+  border-radius: var(--radius-s);
+  margin-bottom: var(--size-4-2);
+  padding: var(--size-4-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nnwa-panel__track-label,
+.nnwa-panel__empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.nnwa-panel__track-label {
+  margin-bottom: var(--size-4-1);
+}

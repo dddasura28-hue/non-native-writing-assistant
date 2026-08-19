@@ -1,0 +1,9 @@
+{
+  "id": "non-native-writing-assistant",
+  "name": "Non-Native Writing Assistant",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "AI-assisted writing for composing directly in a non-native language.",
+  "author": "Non-Native Writing Assistant contributors",
+  "isDesktopOnly": false
+}
