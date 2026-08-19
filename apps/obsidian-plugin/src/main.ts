@@ -7,7 +7,7 @@ import {
 import { AnalysisCoordinator } from "@non-native-writing/application";
 
 import { DemoAnalysisProvider } from "./demo-analysis-provider.js";
-import { observeEditorSource } from "./obsidian-source-adapter.js";
+import { ObsidianSourceAdapter } from "./obsidian-source-adapter.js";
 import { WritingAssistantController } from "./writing-assistant-controller.js";
 import {
   WRITING_ASSISTANT_VIEW_TYPE,
@@ -15,6 +15,7 @@ import {
 } from "./writing-assistant-view.js";
 
 export default class NonNativeWritingAssistantPlugin extends Plugin {
+  readonly #sourceAdapter = new ObsidianSourceAdapter();
   #controller?: WritingAssistantController;
 
   async onload(): Promise<void> {
@@ -24,17 +25,53 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
     );
 
     const coordinator = new AnalysisCoordinator(new DemoAnalysisProvider());
-    this.#controller = new WritingAssistantController(coordinator, () =>
-      this.#revealWritingAssistant(),
+    this.#controller = new WritingAssistantController(
+      coordinator,
+      () => this.#revealWritingAssistant(),
+      {
+        getAutomaticPresenter: () => this.#getOpenWritingAssistant(),
+      },
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (editor) => {
+        const markdownView =
+          this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (markdownView === null || markdownView.editor !== editor) {
+          return;
+        }
+
+        this.#controller?.scheduleAutomaticAnalysis(
+          this.#sourceAdapter.observe(markdownView),
+        );
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (!(leaf?.view instanceof MarkdownView)) {
+          return;
+        }
+
+        this.#controller?.scheduleAutomaticAnalysis(
+          this.#sourceAdapter.observe(leaf.view),
+        );
+      }),
     );
 
     this.addCommand({
       id: "open-writing-assistant-view",
       name: "Open writing assistant",
       callback: () => {
-        void this.#revealWritingAssistant().catch((error: unknown) => {
-          new Notice(describeHostError(error, "Could not open the writing assistant."));
-        });
+        void this.#revealWritingAssistant()
+          .then((view) => {
+            this.#controller?.presentActive(view);
+          })
+          .catch((error: unknown) => {
+            new Notice(
+              describeHostError(error, "Could not open the writing assistant."),
+            );
+          });
       },
     });
 
@@ -49,9 +86,7 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
           return;
         }
 
-        const documentKey =
-          markdownView.file?.path ?? "obsidian-active-untitled-document";
-        const source = observeEditorSource(markdownView.editor, documentKey);
+        const source = this.#sourceAdapter.observe(markdownView);
 
         void this.#controller?.analyze(source).catch((error: unknown) => {
           new Notice(describeHostError(error, "Could not analyze this document."));
@@ -83,6 +118,20 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
     }
 
     await this.app.workspace.revealLeaf(leaf);
+    return getWritingAssistantView(leaf);
+  }
+
+  async #getOpenWritingAssistant(): Promise<
+    WritingAssistantView | undefined
+  > {
+    const leaf = this.app.workspace.getLeavesOfType(
+      WRITING_ASSISTANT_VIEW_TYPE,
+    )[0];
+    if (leaf === undefined) {
+      return undefined;
+    }
+
+    await leaf.loadIfDeferred();
     return getWritingAssistantView(leaf);
   }
 }
