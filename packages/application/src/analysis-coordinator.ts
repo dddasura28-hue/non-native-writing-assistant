@@ -16,6 +16,11 @@ import {
   copyAnalysisConfiguration,
   type AnalysisConfiguration,
 } from "./analysis-configuration.js";
+import {
+  copyAnalysisContext,
+  createWholeAvailableAnalysisContext,
+  type AnalysisContext,
+} from "./analysis-context.js";
 import type {
   AnalysisProposal,
   AnalysisProvider,
@@ -47,6 +52,7 @@ export class AnalysisCoordinator {
   readonly #provider: AnalysisProvider;
   readonly #activeRequests = new Map<SegmentId, ActiveRequest>();
   readonly #configurations = new Map<SegmentId, AnalysisConfiguration>();
+  readonly #contexts = new Map<SegmentId, AnalysisContext>();
 
   constructor(provider: AnalysisProvider) {
     this.#provider = provider;
@@ -66,16 +72,25 @@ export class AnalysisCoordinator {
     this.#activeRequests.get(segmentId)?.controller.abort();
   }
 
+  updateAnalysisContext(segmentId: SegmentId, context: AnalysisContext): void {
+    this.#contexts.set(segmentId, copyAnalysisContext(context));
+  }
+
   async analyze(
     segment: WritingSegment,
     configuration: AnalysisConfiguration,
+    context: AnalysisContext = createWholeAvailableAnalysisContext(
+      segment.sourceText,
+    ),
   ): Promise<AnalysisOutcome> {
     this.updateConfiguration(segment.id, configuration);
+    this.updateAnalysisContext(segment.id, context);
     this.#activeRequests.get(segment.id)?.controller.abort();
 
     const snapshot = captureAnalysisSnapshot(
       segment,
       this.#configurations.get(segment.id)!,
+      this.#contexts.get(segment.id)!,
     );
     const activeRequest: ActiveRequest = {
       token: Symbol("analysis-request"),
@@ -132,13 +147,15 @@ export class AnalysisCoordinator {
 
   #isStale(segment: WritingSegment, snapshot: AnalysisSnapshot): boolean {
     const currentConfiguration = this.#configurations.get(segment.id);
-    if (currentConfiguration === undefined) {
+    const currentContext = this.#contexts.get(segment.id);
+    if (currentConfiguration === undefined || currentContext === undefined) {
       return true;
     }
 
     const currentSnapshot = captureAnalysisSnapshot(
       segment,
       currentConfiguration,
+      currentContext,
     );
     return !dependencyStampMatches(
       snapshot.dependencyStamp,

@@ -201,9 +201,12 @@ A `DependencyStamp` is a compact description of the input snapshot that produced
 - assist-policy identity and revision;
 - style-profile identity and revision;
 - relevant language configuration; and
-- relevant processor configuration.
+- relevant processor configuration; and
+- the selected source location and effective surrounding-context fingerprint.
 
 Implementations may represent some configuration dependencies with a stable identity, revision, or compact fingerprint. The architecture does not require a large version object with a separate field for every possible setting.
+
+The context fingerprint is a compact deterministic change detector, not a security hash. Raw surrounding-context strings belong in the transient analysis snapshot/request and are not persisted in domain tracks merely to establish currentness.
 
 The invariant is: a derived result may be treated as current only if its dependency stamp still matches the dependencies that would be used to produce that result now. The application owns this comparison and applies the same rule to every processor result.
 
@@ -225,6 +228,10 @@ Debouncing and limited concurrent execution may improve responsiveness, but neit
 
 The host is an environment in which the product runs, not part of the product's domain definition. “Host adapter” names this architectural boundary; it does not require one giant interface. A future implementation may expose small ports for source observation, edit application, persistence, and presentation integration without defining all of those interfaces in advance.
 
+Obsidian is the reference document host, not the definition of the product. The host-independent writing engine must also support text-input-session hosts that may have no file or document path, expose only limited surrounding text, and provide cursor, selection, or IME composition state. A host supplies an immutable `TextContext` describing the text currently available—not necessarily a complete document—and an application-owned `ContextSelector` chooses the active text before it enters the existing writing-segment and analysis flow.
+
+The portable flow is `TextContext` → `ContextSelector` → `ContextSelection`. A `ContextSelection` distinguishes source-mappable `activeText`, which is the only text eligible for normalization or future replacement, from read-only `beforeContext` and `afterContext`, which may influence generation but are never implicitly part of the replacement target. Its UTF-16 source range must slice back to exactly `activeText`; the host/application boundary retains that mapping for a future explicit Accept/Replace flow without moving host editor positions into core.
+
 Across those ports, the host integration is responsible as needed for:
 
 - reading source snapshots and observing user edits;
@@ -235,6 +242,8 @@ Across those ports, the host integration is responsible as needed for:
 - reporting lifecycle events such as document changes or session closure.
 
 The first adapter may use Obsidian editor, vault, workspace, and plugin APIs internally. Those types stop at the adapter boundary. The same application use cases should be reusable by browser, VS Code, or desktop adapters with different text and storage mechanics.
+
+The Obsidian host observes only its supported public events and APIs. A cursor-only move to another block may therefore become visible on the next source edit, manual Analyze command, or other existing synchronization event; accessing CodeMirror internals solely to observe cursor movement is deferred.
 
 An apply flow crosses the boundary in a controlled sequence: the application validates the suggestion and expected revision, requests a specific edit from the host adapter, receives the resulting source snapshot, and records that snapshot as the new source revision. Failures leave source state unchanged and are reported to the user.
 

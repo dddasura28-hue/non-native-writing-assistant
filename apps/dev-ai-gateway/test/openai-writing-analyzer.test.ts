@@ -18,6 +18,8 @@ describe("OpenAIWritingAnalyzer", () => {
       analyzer.analyze(
         {
           sourceText: "I want 写清楚",
+          beforeContext: "Earlier paragraph.",
+          afterContext: "Later paragraph.",
           nativeLanguageId: "zh-CN",
           targetLanguageId: "en",
         },
@@ -36,6 +38,9 @@ describe("OpenAIWritingAnalyzer", () => {
     ];
     expect(request.model).toBe("test-model");
     expect(request.input).toContain("I want 写清楚");
+    expect(request.input).toContain("Earlier paragraph.");
+    expect(request.input).toContain("Later paragraph.");
+    expect(request.input).toContain("TEXT TO EDIT");
     expect(request.text.format).toMatchObject({
       type: "json_schema",
       name: "writing_analysis",

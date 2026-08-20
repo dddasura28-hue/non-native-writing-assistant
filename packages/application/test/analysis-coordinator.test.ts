@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AnalysisCoordinator,
+  createAnalysisContext,
   type AnalysisConfiguration,
   type AnalysisProposal,
   type ProposedDerivedTextTrack,
@@ -248,6 +249,7 @@ describe("AnalysisCoordinator", () => {
           configuration.languageConfigurationFingerprint,
         processorConfigurationFingerprint:
           configuration.processorConfigurationFingerprint,
+        contextFingerprint: "context:test",
       }),
     });
     const confirmed = editNativeIntentTrack(
@@ -306,6 +308,62 @@ describe("AnalysisCoordinator", () => {
 
     await expect(outcomePromise).resolves.toEqual({ status: "stale" });
     expect(segment.listDerivedTracks()).toHaveLength(0);
+  });
+
+  it("rejects a pending result when only surrounding context changes", async () => {
+    const segment = createSegment();
+    const provider = new MockAnalysisProvider();
+    const coordinator = new AnalysisCoordinator(provider);
+    const originalContext = createAnalysisContext({
+      activeText: segment.sourceText,
+      sourceRange: { start: 10, end: 20 },
+      beforeContext: "Before A",
+      afterContext: "After",
+    });
+    const updatedContext = createAnalysisContext({
+      activeText: segment.sourceText,
+      sourceRange: { start: 10, end: 20 },
+      beforeContext: "Before revised",
+      afterContext: "After",
+    });
+    const updatedAfterContext = createAnalysisContext({
+      activeText: segment.sourceText,
+      sourceRange: { start: 10, end: 20 },
+      beforeContext: "Before A",
+      afterContext: "After revised",
+    });
+    const relocatedContext = createAnalysisContext({
+      activeText: segment.sourceText,
+      sourceRange: { start: 30, end: 40 },
+      beforeContext: "Before A",
+      afterContext: "After",
+    });
+    const outcomePromise = coordinator.analyze(
+      segment,
+      createConfiguration(),
+      originalContext,
+    );
+    const request = provider.request(0);
+
+    expect(request.snapshot).toMatchObject({
+      beforeContext: "Before A",
+      afterContext: "After",
+    });
+    expect(request.snapshot.dependencyStamp.contextFingerprint).toBe(
+      originalContext.contextFingerprint,
+    );
+    expect(originalContext.contextFingerprint).not.toContain("Before A");
+    expect(updatedAfterContext.contextFingerprint).not.toBe(
+      originalContext.contextFingerprint,
+    );
+    expect(relocatedContext.contextFingerprint).not.toBe(
+      originalContext.contextFingerprint,
+    );
+
+    coordinator.updateAnalysisContext(segment.id, updatedContext);
+    request.resolve(proposalFor(request, []));
+
+    await expect(outcomePromise).resolves.toEqual({ status: "stale" });
   });
 
   it("returns failed and leaves core state unchanged when the provider rejects", async () => {

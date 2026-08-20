@@ -47,6 +47,8 @@ export class HttpAnalysisProvider implements AnalysisProvider {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sourceText: snapshot.sourceText,
+        beforeContext: snapshot.beforeContext,
+        afterContext: snapshot.afterContext,
         nativeLanguageId: snapshot.nativeLanguageId,
         targetLanguageId: snapshot.targetLanguageId,
         ...(snapshot.confirmedNativeIntent === undefined

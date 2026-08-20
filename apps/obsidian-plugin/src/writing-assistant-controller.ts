@@ -1,7 +1,15 @@
 import {
   AnalysisCoordinator,
+  LocalBlockContextSelector,
+  assertContextSelectionMapsToText,
+  createAnalysisContext,
+  createWholeAvailableAnalysisContext,
   type AnalysisConfiguration,
+  type AnalysisContext,
   type AnalysisOutcome,
+  type ContextSelection,
+  type ContextSelector,
+  type TextContext,
 } from "@non-native-writing/application";
 import {
   WritingSegment,
@@ -27,15 +35,16 @@ export interface WritingAssistantPresenter {
   present(viewModel: WritingAssistantViewModel): void;
 }
 
-export interface ObservedDocumentSource {
+export interface ObservedTextContext {
   readonly documentKey: string;
-  readonly text: string;
+  readonly textContext: TextContext;
 }
 
 export interface WritingAssistantControllerOptions {
   readonly debounceMs?: number;
   readonly getAutomaticPresenter?: GetWritingAssistant;
   readonly analysisConfigurationSource?: AnalysisConfigurationSource;
+  readonly contextSelector?: ContextSelector;
 }
 
 export type RevealWritingAssistant = () => Promise<WritingAssistantPresenter>;
@@ -45,7 +54,8 @@ export type GetWritingAssistant = () => Promise<
 
 interface DocumentState {
   readonly documentKey: string;
-  readonly segment: WritingSegment;
+  segment: WritingSegment;
+  analysisTarget: DocumentAnalysisTarget | null;
   documentRunNumber: number;
   visibleTrackIds: readonly TrackId[];
   status: AnalysisStatus;
@@ -58,12 +68,25 @@ interface SourceActivation {
   readonly shouldAutomaticallyAnalyze: boolean;
 }
 
+interface SelectedDocumentSource {
+  readonly documentKey: string;
+  readonly selection: ContextSelection | null;
+}
+
+interface DocumentAnalysisTarget {
+  readonly selection: ContextSelection;
+  readonly analysisContext: AnalysisContext;
+}
+
+const EMPTY_ANALYSIS_CONTEXT = createWholeAvailableAnalysisContext("");
+
 export class WritingAssistantController {
   readonly #coordinator: AnalysisCoordinator;
   readonly #revealWritingAssistant: RevealWritingAssistant;
   readonly #getAutomaticPresenter: GetWritingAssistant;
-  readonly #debouncedAnalysis: DebouncedAnalysisScheduler<ObservedDocumentSource>;
+  readonly #debouncedAnalysis: DebouncedAnalysisScheduler<SelectedDocumentSource>;
   readonly #analysisConfigurationSource: AnalysisConfigurationSource;
+  readonly #contextSelector: ContextSelector;
   readonly #unsubscribeAnalysisConfiguration: () => void;
   readonly #documents = new Map<string, DocumentState>();
 
@@ -86,6 +109,8 @@ export class WritingAssistantController {
       new StaticAnalysisConfigurationSource(
         DEVELOPMENT_ANALYSIS_CONFIGURATION,
       );
+    this.#contextSelector =
+      options.contextSelector ?? new LocalBlockContextSelector();
     this.#unsubscribeAnalysisConfiguration =
       this.#analysisConfigurationSource.onDidChange(() => {
         this.#handleAnalysisConfigurationChange();
@@ -100,11 +125,12 @@ export class WritingAssistantController {
     );
   }
 
-  scheduleAutomaticAnalysis(source: ObservedDocumentSource): void {
+  scheduleAutomaticAnalysis(observed: ObservedTextContext): void {
     if (this.#disposed) {
       return;
     }
 
+    const source = this.#selectContext(observed);
     const activation = this.#activateSource(source);
     const state = activation.documentState;
 
@@ -112,7 +138,7 @@ export class WritingAssistantController {
       this.#debouncedAnalysis.cancel();
     }
 
-    if (source.text.length === 0) {
+    if (source.selection === null) {
       this.#debouncedAnalysis.cancel();
       this.#coordinator.cancelAnalysis(state.segment.id);
       state.documentRunNumber += 1;
@@ -130,9 +156,9 @@ export class WritingAssistantController {
   }
 
   async analyze(
-    source: ObservedDocumentSource,
+    observed: ObservedTextContext,
   ): Promise<AnalysisOutcome | undefined> {
-    return this.#analyzeSource(source, true);
+    return this.#analyzeSource(this.#selectContext(observed), true);
   }
 
   presentActive(presenter: WritingAssistantPresenter): void {
@@ -147,7 +173,7 @@ export class WritingAssistantController {
   }
 
   async #analyzeSource(
-    source: ObservedDocumentSource,
+    source: SelectedDocumentSource,
     revealView: boolean,
   ): Promise<AnalysisOutcome | undefined> {
     if (this.#disposed) {
@@ -160,7 +186,7 @@ export class WritingAssistantController {
 
     this.#coordinator.cancelAnalysis(state.segment.id);
 
-    if (source.text.length === 0) {
+    if (source.selection === null) {
       resetPresentationState(state);
       const presenter = await this.#getPresenter(revealView);
       if (
@@ -186,6 +212,7 @@ export class WritingAssistantController {
     const outcome = await this.#coordinator.analyze(
       state.segment,
       this.#analysisConfigurationSource.getConfiguration(),
+      state.analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
     );
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
@@ -249,7 +276,7 @@ export class WritingAssistantController {
     }
   }
 
-  #activateSource(source: ObservedDocumentSource): SourceActivation {
+  #activateSource(source: SelectedDocumentSource): SourceActivation {
     const previousState =
       this.#activeDocumentKey === undefined
         ? undefined
@@ -258,21 +285,23 @@ export class WritingAssistantController {
 
     let state = this.#documents.get(source.documentKey);
     const documentCreated = state === undefined;
+    const sourceText = source.selection?.activeText ?? "";
+    const analysisTarget = createDocumentAnalysisTarget(source.selection);
 
     if (state === undefined) {
-      const segmentNumber = ++this.#nextSegmentNumber;
       state = {
         documentKey: source.documentKey,
-        segment: WritingSegment.create({
-          id: asSegmentId(`obsidian-segment-${segmentNumber}`),
-          sourceTrackId: asTrackId(`obsidian-source-${segmentNumber}`),
-          sourceText: source.text,
-        }),
+        segment: this.#createSegment(sourceText),
+        analysisTarget,
         documentRunNumber: 0,
         visibleTrackIds: Object.freeze([]),
         status: "Idle",
       };
       this.#documents.set(source.documentKey, state);
+      this.#coordinator.updateAnalysisContext(
+        state.segment.id,
+        analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
+      );
     }
 
     if (documentChanged && previousState !== undefined) {
@@ -285,11 +314,31 @@ export class WritingAssistantController {
       }
     }
 
-    const sourceChanged = state.segment.sourceText !== source.text;
-    if (sourceChanged) {
+    const sourceChanged = state.segment.sourceText !== sourceText;
+    const sourceLocationChanged = !sameSourceRange(
+      state.analysisTarget?.selection.sourceRange,
+      analysisTarget?.selection.sourceRange,
+    );
+    const targetChanged =
+      state.analysisTarget?.analysisContext.contextFingerprint !==
+      analysisTarget?.analysisContext.contextFingerprint;
+    if (sourceChanged || targetChanged) {
       state.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(state.segment.id);
-      state.segment.updateSourceText(source.text);
+      if (sourceLocationChanged && !sourceChanged) {
+        this.#coordinator.updateAnalysisContext(
+          state.segment.id,
+          analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
+        );
+        state.segment = this.#createSegment(sourceText);
+      } else if (sourceChanged) {
+        state.segment.updateSourceText(sourceText);
+      }
+      state.analysisTarget = analysisTarget;
+      this.#coordinator.updateAnalysisContext(
+        state.segment.id,
+        analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
+      );
       resetPresentationState(state);
     }
 
@@ -299,11 +348,32 @@ export class WritingAssistantController {
       documentState: state,
       documentChanged,
       shouldAutomaticallyAnalyze:
-        source.text.length > 0 &&
+        source.selection !== null &&
         (documentCreated ||
           sourceChanged ||
+          targetChanged ||
           (documentChanged && state.status !== "Applied")),
     };
+  }
+
+  #selectContext(observed: ObservedTextContext): SelectedDocumentSource {
+    const selection = this.#contextSelector.select(observed.textContext);
+    if (selection !== null) {
+      assertContextSelectionMapsToText(observed.textContext, selection);
+    }
+    return Object.freeze({
+      documentKey: observed.documentKey,
+      selection,
+    });
+  }
+
+  #createSegment(sourceText: string): WritingSegment {
+    const segmentNumber = ++this.#nextSegmentNumber;
+    return WritingSegment.create({
+      id: asSegmentId(`obsidian-segment-${segmentNumber}`),
+      sourceTrackId: asTrackId(`obsidian-source-${segmentNumber}`),
+      sourceText,
+    });
   }
 
   #queuePresentation(state: DocumentState): void {
@@ -356,6 +426,30 @@ export class WritingAssistantController {
       state.documentRunNumber === documentRunNumber
     );
   }
+}
+
+function createDocumentAnalysisTarget(
+  selection: ContextSelection | null,
+): DocumentAnalysisTarget | null {
+  return selection === null
+    ? null
+    : Object.freeze({
+        selection,
+        analysisContext: createAnalysisContext(selection),
+      });
+}
+
+function sameSourceRange(
+  left: ContextSelection["sourceRange"] | undefined,
+  right: ContextSelection["sourceRange"] | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.start === right.start &&
+      left.end === right.end)
+  );
 }
 
 function resetPresentationState(state: DocumentState): void {

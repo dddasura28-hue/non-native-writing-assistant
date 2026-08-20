@@ -7,6 +7,8 @@ const nonEmptyText = z.string().min(1);
 export const writingModelRequestSchema = z
   .object({
     sourceText: nonEmptyText,
+    beforeContext: z.string().default(""),
+    afterContext: z.string().default(""),
     nativeLanguageId: nonEmptyText,
     targetLanguageId: nonEmptyText,
     confirmedNativeIntent: z
@@ -37,6 +39,8 @@ export const writingModelResultSchema = z
 
 export interface WritingModelRequest {
   readonly sourceText: string;
+  readonly beforeContext: string;
+  readonly afterContext: string;
   readonly nativeLanguageId: string;
   readonly targetLanguageId: string;
   readonly confirmedNativeIntent?: { readonly text: string };

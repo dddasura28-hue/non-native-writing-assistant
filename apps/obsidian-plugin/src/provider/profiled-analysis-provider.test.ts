@@ -56,6 +56,7 @@ class FakeSecretResolver implements SecretResolver {
 class RecordingAdapter implements WritingModelAdapter {
   readonly providerId: string;
   readonly calls: WritingModelInvocation[] = [];
+  readonly requests: WritingModelRequest[] = [];
   readonly #result: WritingModelResult;
 
   constructor(providerId: string, result: WritingModelResult = commonResult) {
@@ -64,9 +65,10 @@ class RecordingAdapter implements WritingModelAdapter {
   }
 
   async analyze(
-    _request: WritingModelRequest,
+    request: WritingModelRequest,
     invocation: WritingModelInvocation,
   ): Promise<WritingModelResult> {
+    this.requests.push(request);
     this.calls.push(invocation);
     return this.#result;
   }
@@ -116,6 +118,8 @@ function snapshot(): AnalysisSnapshot {
     segmentId: asSegmentId("profile-segment"),
     sourceTrackId: asTrackId("profile-source"),
     sourceText: "I want 写清楚",
+    beforeContext: "Earlier paragraph.",
+    afterContext: "Later paragraph.",
     sourceRevision: 1,
     dependencyStamp: createDependencyStamp({
       sourceRevision: 1,
@@ -123,6 +127,7 @@ function snapshot(): AnalysisSnapshot {
       styleProfileFingerprint: "style:test",
       languageConfigurationFingerprint: "languages:zh-CN-en",
       processorConfigurationFingerprint: "writing-analysis:test",
+      contextFingerprint: "context:profile-test",
     }),
     targetLanguageId: "en",
     nativeLanguageId: "zh-CN",
@@ -159,6 +164,11 @@ describe("ProfiledAnalysisProvider", () => {
 
     expect(inactiveAdapter.calls).toHaveLength(0);
     expect(activeAdapter.calls).toHaveLength(1);
+    expect(activeAdapter.requests[0]).toMatchObject({
+      sourceText: "I want 写清楚",
+      beforeContext: "Earlier paragraph.",
+      afterContext: "Later paragraph.",
+    });
     expect(secrets.requestedRefs).toEqual([active.secretRef]);
   });
 

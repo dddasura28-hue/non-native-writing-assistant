@@ -17,6 +17,7 @@ const stamp = createDependencyStamp({
   styleProfileFingerprint: "style:test",
   languageConfigurationFingerprint: "language:test",
   processorConfigurationFingerprint: "processor:test",
+  contextFingerprint: "context:presentation-test",
 });
 
 function createSegment(): WritingSegment {

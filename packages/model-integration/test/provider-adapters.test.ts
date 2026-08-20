@@ -15,6 +15,8 @@ import {
 
 const request: WritingModelRequest = {
   sourceText: "I want 写清楚",
+  beforeContext: "We are discussing writing goals.",
+  afterContext: "Clarity matters for the next step.",
   nativeLanguageId: "zh-CN",
   targetLanguageId: "en",
 };
@@ -73,6 +75,14 @@ function parsedBody(transport: RecordingTransport): Record<string, unknown> {
   return JSON.parse(sent.body) as Record<string, unknown>;
 }
 
+function expectSharedContextPrompt(transport: RecordingTransport): void {
+  const serialized = JSON.stringify(parsedBody(transport));
+  expect(serialized).toContain("TEXT TO EDIT");
+  expect(serialized).toContain(request.sourceText);
+  expect(serialized).toContain(request.beforeContext);
+  expect(serialized).toContain(request.afterContext);
+}
+
 describe("direct writing-model adapters", () => {
   it("builds an OpenAI Responses request and maps structured output", async () => {
     const transport = new RecordingTransport({
@@ -104,6 +114,7 @@ describe("direct writing-model adapters", () => {
         },
       },
     });
+    expectSharedContextPrompt(transport);
   });
 
   it("builds an Anthropic Messages request and maps structured output", async () => {
@@ -128,6 +139,7 @@ describe("direct writing-model adapters", () => {
       model: providerProfile.modelId,
       output_config: { format: { type: "json_schema" } },
     });
+    expectSharedContextPrompt(transport);
   });
 
   it("builds a Gemini generateContent request and maps structured output", async () => {
@@ -153,6 +165,7 @@ describe("direct writing-model adapters", () => {
         responseJsonSchema: { type: "object" },
       },
     });
+    expectSharedContextPrompt(transport);
   });
 
   it("uses a custom base URL, model ID, and compatibility mode", async () => {
@@ -175,5 +188,6 @@ describe("direct writing-model adapters", () => {
       model: "arbitrary-new-model",
       response_format: { type: "json_object" },
     });
+    expectSharedContextPrompt(transport);
   });
 });

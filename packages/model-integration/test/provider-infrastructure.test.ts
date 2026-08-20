@@ -98,6 +98,8 @@ describe("provider infrastructure", () => {
       await adapter.analyze(
         {
           sourceText: "Draft",
+          beforeContext: "",
+          afterContext: "",
           nativeLanguageId: "zh-CN",
           targetLanguageId: "en",
         },
@@ -125,7 +127,20 @@ describe("provider infrastructure", () => {
 
     for (const source of sources) {
       expect(source).not.toMatch(
-        /from\s+["'](?:openai|@anthropic-ai|@google\/genai|obsidian)["']/,
+        /from\s+["'](?:openai|@anthropic-ai|@google\/genai|obsidian|@codemirror\/[^"']+)["']/,
+      );
+    }
+  });
+
+  it("keeps provider and model types out of the text-context boundary", () => {
+    const applicationSource = resolve(process.cwd(), "../application/src");
+    const sources = ["text-context.ts", "context-selector.ts"].map((file) =>
+      readFileSync(resolve(applicationSource, file), "utf8"),
+    );
+
+    for (const source of sources) {
+      expect(source).not.toMatch(
+        /@non-native-writing\/model-integration|AnalysisProvider|ProviderProfile|WritingModel/,
       );
     }
   });

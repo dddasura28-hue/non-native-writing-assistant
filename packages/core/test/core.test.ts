@@ -35,6 +35,7 @@ function createStamp(sourceRevision = 1): DependencyStamp {
     styleProfileFingerprint: "style:neutral",
     languageConfigurationFingerprint: "languages:zh-en",
     processorConfigurationFingerprint: "processor:normalized:v1",
+    contextFingerprint: "context:whole",
   });
 }
 
@@ -229,6 +230,10 @@ describe("DependencyStamp", () => {
       createDependencyStamp({
         ...baseline,
         processorConfigurationFingerprint: "processor:different",
+      }),
+      createDependencyStamp({
+        ...baseline,
+        contextFingerprint: "context:different",
       }),
     ];
 

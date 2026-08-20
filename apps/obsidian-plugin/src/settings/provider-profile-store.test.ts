@@ -133,6 +133,8 @@ function snapshot(): AnalysisSnapshot {
     segmentId: asSegmentId("settings-segment"),
     sourceTrackId: asTrackId("settings-source"),
     sourceText: "Mixed source 文本",
+    beforeContext: "Earlier paragraph.",
+    afterContext: "Later paragraph.",
     sourceRevision: 1,
     dependencyStamp: createDependencyStamp({
       sourceRevision: 1,
@@ -140,6 +142,7 @@ function snapshot(): AnalysisSnapshot {
       styleProfileFingerprint: "style:test",
       languageConfigurationFingerprint: "languages:test",
       processorConfigurationFingerprint: "analysis:test",
+      contextFingerprint: "context:settings-test",
     }),
     targetLanguageId: "en",
     nativeLanguageId: "zh-CN",

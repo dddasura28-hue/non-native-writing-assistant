@@ -5,6 +5,7 @@ export interface DependencyStamp {
   readonly styleProfileFingerprint: string;
   readonly languageConfigurationFingerprint: string;
   readonly processorConfigurationFingerprint: string;
+  readonly contextFingerprint: string;
 }
 
 function assertRevision(value: number, fieldName: string): void {
@@ -44,6 +45,7 @@ export function dependencyStampMatches(
     resultStamp.languageConfigurationFingerprint ===
       currentStamp.languageConfigurationFingerprint &&
     resultStamp.processorConfigurationFingerprint ===
-      currentStamp.processorConfigurationFingerprint
+      currentStamp.processorConfigurationFingerprint &&
+    resultStamp.contextFingerprint === currentStamp.contextFingerprint
   );
 }

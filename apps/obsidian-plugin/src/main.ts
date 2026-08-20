@@ -17,7 +17,7 @@ import {
   DEVELOPMENT_GATEWAY_URL,
 } from "./development-configuration.js";
 import { HttpAnalysisProvider } from "./http-analysis-provider.js";
-import { ObsidianSourceAdapter } from "./obsidian-source-adapter.js";
+import { ObsidianTextContextAdapter } from "./obsidian-text-context-adapter.js";
 import {
   ProfileAnalysisConfigurationSource,
   StaticAnalysisConfigurationSource,
@@ -36,7 +36,7 @@ import {
 } from "./writing-assistant-view.js";
 
 export default class NonNativeWritingAssistantPlugin extends Plugin {
-  readonly #sourceAdapter = new ObsidianSourceAdapter();
+  readonly #textContextAdapter = new ObsidianTextContextAdapter();
   #profiles?: ProviderProfileStore;
   #controller?: WritingAssistantController;
 
@@ -79,7 +79,7 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
         }
 
         this.#controller?.scheduleAutomaticAnalysis(
-          this.#sourceAdapter.observe(markdownView),
+          this.#textContextAdapter.observe(markdownView),
         );
       }),
     );
@@ -91,7 +91,7 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
         }
 
         this.#controller?.scheduleAutomaticAnalysis(
-          this.#sourceAdapter.observe(leaf.view),
+          this.#textContextAdapter.observe(leaf.view),
         );
       }),
     );
@@ -123,7 +123,7 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
           return;
         }
 
-        const source = this.#sourceAdapter.observe(markdownView);
+        const source = this.#textContextAdapter.observe(markdownView);
 
         void this.#controller?.analyze(source).catch((error: unknown) => {
           new Notice(describeHostError(error, "Could not analyze this document."));

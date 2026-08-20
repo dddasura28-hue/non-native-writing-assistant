@@ -29,6 +29,8 @@ function createSnapshot(): AnalysisSnapshot {
     segmentId: asSegmentId("segment-http"),
     sourceTrackId: asTrackId("source-http"),
     sourceText: "I want 写得 clear.",
+    beforeContext: "Earlier context.",
+    afterContext: "Later context.",
     sourceRevision: 3,
     dependencyStamp: createDependencyStamp({
       sourceRevision: 3,
@@ -38,6 +40,7 @@ function createSnapshot(): AnalysisSnapshot {
         configuration.languageConfigurationFingerprint,
       processorConfigurationFingerprint:
         configuration.processorConfigurationFingerprint,
+      contextFingerprint: "context:http-test",
     }),
     confirmedNativeIntent: Object.freeze({
       trackId: asTrackId("confirmed-intent"),
@@ -92,6 +95,8 @@ describe("HttpAnalysisProvider", () => {
     const [, init] = fetchImplementation.mock.calls[0] ?? [];
     expect(JSON.parse(String(init?.body))).toEqual({
       sourceText: snapshot.sourceText,
+      beforeContext: snapshot.beforeContext,
+      afterContext: snapshot.afterContext,
       nativeLanguageId: "zh-CN",
       targetLanguageId: "en",
       confirmedNativeIntent: { text: "我想写得清楚。" },

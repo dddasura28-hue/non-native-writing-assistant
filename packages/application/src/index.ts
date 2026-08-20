@@ -1,4 +1,7 @@
 export * from "./analysis-configuration.js";
+export * from "./analysis-context.js";
 export * from "./analysis-coordinator.js";
 export * from "./analysis-provider.js";
 export * from "./analysis-snapshot.js";
+export * from "./context-selector.js";
+export * from "./text-context.js";

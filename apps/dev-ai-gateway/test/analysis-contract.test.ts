@@ -1,6 +1,32 @@
 import { describe, expect, it } from "vitest";
 
-import { writingAnalysisOutputSchema } from "../src/analysis-contract.js";
+import {
+  gatewayAnalysisRequestSchema,
+  writingAnalysisOutputSchema,
+} from "../src/analysis-contract.js";
+
+describe("gatewayAnalysisRequestSchema", () => {
+  it("accepts surrounding context and defaults omitted legacy fields to empty", () => {
+    const common = {
+      sourceText: "Active text",
+      nativeLanguageId: "zh-CN",
+      targetLanguageId: "en",
+    };
+
+    expect(gatewayAnalysisRequestSchema.parse(common)).toMatchObject({
+      ...common,
+      beforeContext: "",
+      afterContext: "",
+    });
+    expect(
+      gatewayAnalysisRequestSchema.parse({
+        ...common,
+        beforeContext: "Before",
+        afterContext: "After",
+      }),
+    ).toMatchObject({ beforeContext: "Before", afterContext: "After" });
+  });
+});
 
 describe("writingAnalysisOutputSchema", () => {
   it("accepts the intended structured output", () => {

@@ -121,6 +121,8 @@ export class ProfiledAnalysisProvider implements AnalysisProvider {
 function requestFrom(snapshot: AnalysisSnapshot): WritingModelRequest {
   return Object.freeze({
     sourceText: snapshot.sourceText,
+    beforeContext: snapshot.beforeContext,
+    afterContext: snapshot.afterContext,
     nativeLanguageId: snapshot.nativeLanguageId,
     targetLanguageId: snapshot.targetLanguageId,
     ...(snapshot.confirmedNativeIntent === undefined
