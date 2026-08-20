@@ -8,8 +8,15 @@ const appDirectory = dirname(fileURLToPath(import.meta.url));
 const outputDirectory = join(appDirectory, "dist");
 const analysisProvider = process.env.NNWA_ANALYSIS_PROVIDER ?? "demo";
 
-if (analysisProvider !== "demo" && analysisProvider !== "http") {
-  throw new Error("NNWA_ANALYSIS_PROVIDER must be either 'demo' or 'http'.");
+if (
+  analysisProvider !== "demo" &&
+  analysisProvider !== "gateway" &&
+  analysisProvider !== "http" &&
+  analysisProvider !== "profile"
+) {
+  throw new Error(
+    "NNWA_ANALYSIS_PROVIDER must be 'demo', 'gateway', 'http', or 'profile'.",
+  );
 }
 
 await mkdir(outputDirectory, { recursive: true });

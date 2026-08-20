@@ -17,6 +17,9 @@ importers:
 
   apps/dev-ai-gateway:
     dependencies:
+      '@non-native-writing/model-integration':
+        specifier: workspace:*
+        version: link:../../packages/model-integration
       openai:
         specifier: ^7.5.0
         version: 7.5.0(zod@4.4.3)
@@ -36,12 +39,15 @@ importers:
       '@non-native-writing/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@non-native-writing/model-integration':
+        specifier: workspace:*
+        version: link:../../packages/model-integration
     devDependencies:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
       obsidian:
-        specifier: ^1.8.7
+        specifier: ^1.11.4
         version: 1.13.1(@codemirror/state@6.5.0)(@codemirror/view@6.38.6)
 
   packages/application:
@@ -51,6 +57,16 @@ importers:
         version: link:../core
 
   packages/core: {}
+
+  packages/model-integration:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^26.2.0
+        version: 26.2.0
 
 packages:
 

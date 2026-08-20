@@ -1,5 +1,6 @@
 import {
   AnalysisCoordinator,
+  type AnalysisConfiguration,
   type AnalysisProposal,
   type AnalysisProvider,
   type AnalysisSnapshot,
@@ -7,6 +8,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_ANALYSIS_DEBOUNCE_MS } from "./debounced-analysis-scheduler.js";
+import type { AnalysisConfigurationSource } from "./provider/analysis-configuration-source.js";
 import type { WritingAssistantViewModel } from "./presentation.js";
 import {
   WritingAssistantController,
@@ -47,6 +49,43 @@ class RecordingPresenter implements WritingAssistantPresenter {
     }
 
     return latest;
+  }
+}
+
+class MutableAnalysisConfigurationSource
+  implements AnalysisConfigurationSource
+{
+  #configuration: AnalysisConfiguration;
+  readonly #listeners = new Set<() => void>();
+
+  constructor() {
+    this.#configuration = {
+      assistPolicyFingerprint: "assist:test",
+      styleProfileFingerprint: "style:test",
+      languageConfigurationFingerprint: "languages:test",
+      processorConfigurationFingerprint: "provider:one",
+      targetLanguageId: "en",
+      nativeLanguageId: "zh-CN",
+    };
+  }
+
+  getConfiguration(): AnalysisConfiguration {
+    return this.#configuration;
+  }
+
+  onDidChange(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  switchProvider(): void {
+    this.#configuration = {
+      ...this.#configuration,
+      processorConfigurationFingerprint: "provider:two",
+    };
+    for (const listener of this.#listeners) {
+      listener();
+    }
   }
 }
 
@@ -214,5 +253,30 @@ describe("WritingAssistantController automatic analysis", () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS * 2);
     await flushMicrotasks();
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it("cancels and invalidates pending analysis when its configuration source changes", async () => {
+    const provider = new ControlledProvider();
+    const presenter = new RecordingPresenter();
+    const configuration = new MutableAnalysisConfigurationSource();
+    const controller = new WritingAssistantController(
+      new AnalysisCoordinator(provider),
+      async () => presenter,
+      { analysisConfigurationSource: configuration },
+    );
+    const outcome = controller.analyze(source("note-a.md", "Pending"));
+    await flushMicrotasks();
+    const request = provider.requests[0];
+    if (request === undefined) {
+      throw new Error("Analysis did not start.");
+    }
+
+    configuration.switchProvider();
+    expect(request.signal.aborted).toBe(true);
+    resolveApplied(request);
+
+    await expect(outcome).resolves.toEqual({ status: "stale" });
+    expect(presenter.latest.status).toBe("Idle");
+    controller.dispose();
   });
 });

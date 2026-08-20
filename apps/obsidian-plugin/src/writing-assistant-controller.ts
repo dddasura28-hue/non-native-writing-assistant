@@ -1,5 +1,6 @@
 import {
   AnalysisCoordinator,
+  type AnalysisConfiguration,
   type AnalysisOutcome,
 } from "@non-native-writing/application";
 import {
@@ -11,6 +12,10 @@ import type { TrackId } from "@non-native-writing/core";
 
 import { DebouncedAnalysisScheduler } from "./debounced-analysis-scheduler.js";
 import { DEVELOPMENT_ANALYSIS_CONFIGURATION } from "./development-configuration.js";
+import {
+  StaticAnalysisConfigurationSource,
+  type AnalysisConfigurationSource,
+} from "./provider/analysis-configuration-source.js";
 import {
   createViewModel,
   statusForOutcome,
@@ -30,6 +35,7 @@ export interface ObservedDocumentSource {
 export interface WritingAssistantControllerOptions {
   readonly debounceMs?: number;
   readonly getAutomaticPresenter?: GetWritingAssistant;
+  readonly analysisConfigurationSource?: AnalysisConfigurationSource;
 }
 
 export type RevealWritingAssistant = () => Promise<WritingAssistantPresenter>;
@@ -57,6 +63,8 @@ export class WritingAssistantController {
   readonly #revealWritingAssistant: RevealWritingAssistant;
   readonly #getAutomaticPresenter: GetWritingAssistant;
   readonly #debouncedAnalysis: DebouncedAnalysisScheduler<ObservedDocumentSource>;
+  readonly #analysisConfigurationSource: AnalysisConfigurationSource;
+  readonly #unsubscribeAnalysisConfiguration: () => void;
   readonly #documents = new Map<string, DocumentState>();
 
   #activeDocumentKey: string | undefined;
@@ -73,6 +81,15 @@ export class WritingAssistantController {
     this.#revealWritingAssistant = revealWritingAssistant;
     this.#getAutomaticPresenter =
       options.getAutomaticPresenter ?? revealWritingAssistant;
+    this.#analysisConfigurationSource =
+      options.analysisConfigurationSource ??
+      new StaticAnalysisConfigurationSource(
+        DEVELOPMENT_ANALYSIS_CONFIGURATION,
+      );
+    this.#unsubscribeAnalysisConfiguration =
+      this.#analysisConfigurationSource.onDidChange(() => {
+        this.#handleAnalysisConfigurationChange();
+      });
     this.#debouncedAnalysis = new DebouncedAnalysisScheduler(
       (source) => {
         void this.#analyzeSource(source, false).catch(() => {
@@ -168,7 +185,7 @@ export class WritingAssistantController {
 
     const outcome = await this.#coordinator.analyze(
       state.segment,
-      DEVELOPMENT_ANALYSIS_CONFIGURATION,
+      this.#analysisConfigurationSource.getConfiguration(),
     );
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
@@ -201,11 +218,32 @@ export class WritingAssistantController {
 
     this.#disposed = true;
     this.#presentationGeneration += 1;
+    this.#unsubscribeAnalysisConfiguration();
     this.#debouncedAnalysis.dispose();
 
     for (const state of this.#documents.values()) {
       state.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(state.segment.id);
+    }
+  }
+
+  #handleAnalysisConfigurationChange(): void {
+    if (this.#disposed) {
+      return;
+    }
+
+    const configuration: AnalysisConfiguration =
+      this.#analysisConfigurationSource.getConfiguration();
+    for (const state of this.#documents.values()) {
+      // Update the dependency context before cancellation so any late result
+      // is stale by DependencyStamp comparison, even if transport ignores abort.
+      this.#coordinator.updateConfiguration(state.segment.id, configuration);
+      this.#coordinator.cancelAnalysis(state.segment.id);
+      state.documentRunNumber += 1;
+      resetPresentationState(state);
+      if (state.documentKey === this.#activeDocumentKey) {
+        this.#queuePresentation(state);
+      }
     }
   }
 

@@ -4,7 +4,7 @@ An author-first writing assistant for composing directly in a non-native languag
 
 ## Development status
 
-The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to a deterministic demo provider. A local-only development gateway can optionally connect the same provider boundary to the OpenAI Responses API; it is not a production backend.
+The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to a deterministic demo provider. Provider-neutral BYOK infrastructure supports direct OpenAI, Anthropic, Gemini, and OpenAI-compatible HTTP adapters through Obsidian's host APIs; provider-profile persistence and settings UI are not implemented yet. The local-only OpenAI development gateway remains an optional path and is not a production backend.
 
 ## Local AI development
 
@@ -33,4 +33,4 @@ Install or copy the resulting `apps/obsidian-plugin/dist` files into a test Vaul
 
 The development endpoint is `POST /v1/analyze`. It accepts source text, native and target language identifiers, and an optional current confirmed native intent. It returns an optional native-intent result plus one or more normalized expressions. For this phase the host uses `zh-CN` as the native language and `en` as the target language.
 
-A production release must replace the localhost URL with a production backend or another secure provider mechanism. The development gateway intentionally has no authentication, accounts, persistence, streaming, caching, or deployment configuration and must not be exposed beyond localhost.
+A production release using the gateway path must replace the localhost URL with an appropriately secured deployment. The development gateway intentionally has no authentication, accounts, persistence, streaming, caching, or deployment configuration and must not be exposed beyond localhost. Direct BYOK profiles will keep only a `SecretStorage` reference in profile configuration; the settings workflow for creating those profiles is deferred.

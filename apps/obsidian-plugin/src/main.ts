@@ -5,14 +5,29 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 import { AnalysisCoordinator } from "@non-native-writing/application";
+import type { AnalysisProvider } from "@non-native-writing/application";
+import {
+  MutableProviderSettings,
+  createBuiltInProviderRegistry,
+} from "@non-native-writing/model-integration";
 
 import { DemoAnalysisProvider } from "./demo-analysis-provider.js";
 import {
   DEVELOPMENT_ANALYSIS_PROVIDER,
+  DEVELOPMENT_ANALYSIS_CONFIGURATION,
   DEVELOPMENT_GATEWAY_URL,
+  DEVELOPMENT_PROVIDER_SETTINGS,
 } from "./development-configuration.js";
 import { HttpAnalysisProvider } from "./http-analysis-provider.js";
 import { ObsidianSourceAdapter } from "./obsidian-source-adapter.js";
+import {
+  ProfileAnalysisConfigurationSource,
+  StaticAnalysisConfigurationSource,
+  type AnalysisConfigurationSource,
+} from "./provider/analysis-configuration-source.js";
+import { ObsidianHttpTransport } from "./provider/obsidian-http-transport.js";
+import { ObsidianSecretResolver } from "./provider/obsidian-secret-resolver.js";
+import { ProfiledAnalysisProvider } from "./provider/profiled-analysis-provider.js";
 import { WritingAssistantController } from "./writing-assistant-controller.js";
 import {
   WRITING_ASSISTANT_VIEW_TYPE,
@@ -29,16 +44,15 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
       (leaf) => new WritingAssistantView(leaf),
     );
 
-    const provider =
-      DEVELOPMENT_ANALYSIS_PROVIDER === "http"
-        ? new HttpAnalysisProvider(DEVELOPMENT_GATEWAY_URL)
-        : new DemoAnalysisProvider();
+    const { provider, analysisConfigurationSource } =
+      this.#createAnalysisComposition();
     const coordinator = new AnalysisCoordinator(provider);
     this.#controller = new WritingAssistantController(
       coordinator,
       () => this.#revealWritingAssistant(),
       {
         getAutomaticPresenter: () => this.#getOpenWritingAssistant(),
+        analysisConfigurationSource,
       },
     );
 
@@ -102,6 +116,48 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
         });
       },
     });
+  }
+
+  #createAnalysisComposition(): {
+    readonly provider: AnalysisProvider;
+    readonly analysisConfigurationSource: AnalysisConfigurationSource;
+  } {
+    const staticConfiguration = new StaticAnalysisConfigurationSource(
+      DEVELOPMENT_ANALYSIS_CONFIGURATION,
+    );
+
+    if (DEVELOPMENT_ANALYSIS_PROVIDER === "profile") {
+      const profiles = new MutableProviderSettings(
+        DEVELOPMENT_PROVIDER_SETTINGS,
+      );
+      const transport = new ObsidianHttpTransport();
+      return {
+        provider: new ProfiledAnalysisProvider(
+          profiles,
+          createBuiltInProviderRegistry(transport),
+          new ObsidianSecretResolver(this.app.secretStorage),
+        ),
+        analysisConfigurationSource: new ProfileAnalysisConfigurationSource(
+          DEVELOPMENT_ANALYSIS_CONFIGURATION,
+          profiles,
+        ),
+      };
+    }
+
+    if (
+      DEVELOPMENT_ANALYSIS_PROVIDER === "gateway" ||
+      DEVELOPMENT_ANALYSIS_PROVIDER === "http"
+    ) {
+      return {
+        provider: new HttpAnalysisProvider(DEVELOPMENT_GATEWAY_URL),
+        analysisConfigurationSource: staticConfiguration,
+      };
+    }
+
+    return {
+      provider: new DemoAnalysisProvider(),
+      analysisConfigurationSource: staticConfiguration,
+    };
   }
 
   onunload(): void {

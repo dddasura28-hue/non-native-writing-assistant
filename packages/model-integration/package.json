@@ -1,0 +1,20 @@
+{
+  "name": "@non-native-writing/model-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  }
+}

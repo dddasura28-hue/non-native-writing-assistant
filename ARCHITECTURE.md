@@ -148,6 +148,18 @@ The boundary must not expose provider SDK message classes, client objects, usage
 
 Processors depend on the neutral port when they require model work. The composition root selects the provider adapter for the MVP; capability-based provider routing is deferred. Neither providers nor processors receive direct access to a host editor, so a model response cannot bypass the explicit apply use case.
 
+### Provider profiles and direct integrations
+
+Provider selection is host/infrastructure configuration, not core domain state. A `ProviderProfile` has stable profile identity, a distinct provider identifier, an open-string model identifier, a reference to a separately stored secret, optional connection configuration such as a base URL, and an enabled state. It never contains a resolved API key. Profile settings may contain zero or more profiles and one optional active profile identifier.
+
+The direct bring-your-own-key integration uses a small static provider registry. Each registered writing-model adapter translates one provider-neutral writing request into an explicit vendor HTTP contract and normalizes the response into the shared writing-model result. Adding a vendor means implementing and registering an adapter; it does not change core or application types. Runtime adapter discovery, capability negotiation, automatic routing, retries, and fallback chains remain deferred.
+
+The active profile is resolved for every analysis request. Changing only `activeProfileId` is sufficient to change the provider/model used by the next request; it does not rebuild writing segments, the coordinator, or core domain objects. Relevant profile properties, including provider ID, model ID, base URL, compatibility mode, and secret reference, contribute to the existing processor-configuration fingerprint. Resolved secret values never do. A host profile-settings change updates the coordinator's current configuration so an in-flight result with the old profile fingerprint is rejected by normal `DependencyStamp` comparison.
+
+Secret resolution and HTTP transport are small host-boundary ports. The Obsidian implementation resolves `secretRef` through `SecretStorage` and sends direct requests through `requestUrl`; neither Obsidian type crosses into the shared adapter layer. Because `requestUrl` does not expose cooperative abort, the adapter checks cancellation before and after transport. Cancellation remains an optimization, while dependency comparison and latest-request checks remain the correctness mechanisms.
+
+The localhost OpenAI development gateway remains an optional provider path. It may use a server SDK internally, but it should share the provider-neutral writing request, semantic prompt, and result validator where practical so direct adapters and the gateway do not drift.
+
 ## Processor abstraction
 
 A processor is a composable unit with:
