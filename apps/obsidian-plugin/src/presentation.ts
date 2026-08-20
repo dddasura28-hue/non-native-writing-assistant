@@ -15,6 +15,7 @@ export type AnalysisStatus =
   | "Applied"
   | "Stale"
   | "Aborted"
+  | "Configuration required"
   | "Failed";
 
 export interface TrackPresentation {

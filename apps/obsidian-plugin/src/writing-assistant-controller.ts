@@ -192,7 +192,9 @@ export class WritingAssistantController {
       return outcome;
     }
 
-    state.status = statusForOutcome(outcome);
+    state.status = isConfigurationRequired(outcome)
+      ? "Configuration required"
+      : statusForOutcome(outcome);
     state.statusDetail =
       outcome.status === "failed" ? describeError(outcome.error) : undefined;
     state.visibleTrackIds =
@@ -373,4 +375,14 @@ function viewModelFor(state: DocumentState): WritingAssistantViewModel {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : "Analysis failed.";
+}
+
+function isConfigurationRequired(outcome: AnalysisOutcome): boolean {
+  return (
+    outcome.status === "failed" &&
+    typeof outcome.error === "object" &&
+    outcome.error !== null &&
+    "code" in outcome.error &&
+    outcome.error.code === "invalid-profile"
+  );
 }

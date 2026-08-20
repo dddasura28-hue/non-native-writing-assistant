@@ -6,6 +6,7 @@ export * from "./built-in-provider-registry.js";
 export * from "./http-transport.js";
 export * from "./provider-definitions.js";
 export * from "./provider-profile.js";
+export * from "./provider-profile-validation.js";
 export * from "./provider-registry.js";
 export * from "./provider-settings.js";
 export * from "./secret-resolver.js";

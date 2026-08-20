@@ -42,7 +42,18 @@ export class ProfiledAnalysisProvider implements AnalysisProvider {
     signal: AbortSignal,
   ): Promise<AnalysisProposal> {
     throwIfAnalysisAborted(signal);
-    const profile = resolveActiveProviderProfile(this.#profiles.getSettings());
+    let profile;
+    try {
+      profile = resolveActiveProviderProfile(this.#profiles.getSettings());
+    } catch (error) {
+      if (error instanceof WritingModelError && error.code === "invalid-profile") {
+        throw new WritingModelError(
+          "invalid-profile",
+          "Configure an AI provider in settings.",
+        );
+      }
+      throw error;
+    }
     const adapter = this.#registry.resolve(profile.providerId);
     const secret = await this.#secrets.resolveSecret(profile.secretRef);
     throwIfAnalysisAborted(signal);

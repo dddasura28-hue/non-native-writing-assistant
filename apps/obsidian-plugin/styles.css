@@ -14,6 +14,22 @@
   margin-bottom: var(--size-4-4);
 }
 
+.nnwa-panel__profile {
+  align-items: center;
+  display: grid;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-4-3);
+}
+
+.nnwa-panel__profile label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.nnwa-panel__profile select {
+  max-width: 100%;
+}
+
 .nnwa-panel__section {
   margin-bottom: var(--size-4-5);
 }
@@ -41,4 +57,30 @@
 
 .nnwa-panel__track-label {
   margin-bottom: var(--size-4-1);
+}
+
+.nnwa-settings-empty {
+  color: var(--text-muted);
+  margin-block: var(--size-4-3);
+}
+
+.nnwa-settings-profile {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  margin-block: var(--size-4-4);
+  padding: var(--size-4-3);
+}
+
+.nnwa-settings-profile h3 {
+  margin-block: 0 var(--size-4-1);
+}
+
+.nnwa-settings-profile__status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: var(--size-4-2);
+}
+
+.nnwa-settings-profile__status.is-invalid {
+  color: var(--text-warning);
 }

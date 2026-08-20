@@ -7,7 +7,6 @@ import {
 import { AnalysisCoordinator } from "@non-native-writing/application";
 import type { AnalysisProvider } from "@non-native-writing/application";
 import {
-  MutableProviderSettings,
   createBuiltInProviderRegistry,
 } from "@non-native-writing/model-integration";
 
@@ -16,7 +15,6 @@ import {
   DEVELOPMENT_ANALYSIS_PROVIDER,
   DEVELOPMENT_ANALYSIS_CONFIGURATION,
   DEVELOPMENT_GATEWAY_URL,
-  DEVELOPMENT_PROVIDER_SETTINGS,
 } from "./development-configuration.js";
 import { HttpAnalysisProvider } from "./http-analysis-provider.js";
 import { ObsidianSourceAdapter } from "./obsidian-source-adapter.js";
@@ -28,6 +26,9 @@ import {
 import { ObsidianHttpTransport } from "./provider/obsidian-http-transport.js";
 import { ObsidianSecretResolver } from "./provider/obsidian-secret-resolver.js";
 import { ProfiledAnalysisProvider } from "./provider/profiled-analysis-provider.js";
+import { loadPluginSettings } from "./settings/plugin-settings.js";
+import { ProviderProfileStore } from "./settings/provider-profile-store.js";
+import { ProviderSettingsTab } from "./settings/provider-settings-tab.js";
 import { WritingAssistantController } from "./writing-assistant-controller.js";
 import {
   WRITING_ASSISTANT_VIEW_TYPE,
@@ -36,12 +37,25 @@ import {
 
 export default class NonNativeWritingAssistantPlugin extends Plugin {
   readonly #sourceAdapter = new ObsidianSourceAdapter();
+  #profiles?: ProviderProfileStore;
   #controller?: WritingAssistantController;
 
   async onload(): Promise<void> {
+    this.#profiles = new ProviderProfileStore(
+      loadPluginSettings(await this.loadData()),
+      (settings) => this.saveData(settings),
+    );
+    this.addSettingTab(new ProviderSettingsTab(this.app, this, this.#profiles));
+
     this.registerView(
       WRITING_ASSISTANT_VIEW_TYPE,
-      (leaf) => new WritingAssistantView(leaf),
+      (leaf) =>
+        new WritingAssistantView(
+          leaf,
+          DEVELOPMENT_ANALYSIS_PROVIDER === "profile"
+            ? this.#profiles
+            : undefined,
+        ),
     );
 
     const { provider, analysisConfigurationSource } =
@@ -127,9 +141,10 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
     );
 
     if (DEVELOPMENT_ANALYSIS_PROVIDER === "profile") {
-      const profiles = new MutableProviderSettings(
-        DEVELOPMENT_PROVIDER_SETTINGS,
-      );
+      const profiles = this.#profiles;
+      if (profiles === undefined) {
+        throw new Error("Provider profiles were not loaded.");
+      }
       const transport = new ObsidianHttpTransport();
       return {
         provider: new ProfiledAnalysisProvider(

@@ -4,7 +4,7 @@ An author-first writing assistant for composing directly in a non-native languag
 
 ## Development status
 
-The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to a deterministic demo provider. Provider-neutral BYOK infrastructure supports direct OpenAI, Anthropic, Gemini, and OpenAI-compatible HTTP adapters through Obsidian's host APIs; provider-profile persistence and settings UI are not implemented yet. The local-only OpenAI development gateway remains an optional path and is not a production backend.
+The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to provider-profile mode, with persistent Obsidian settings and direct OpenAI, Anthropic, Gemini, and OpenAI-compatible BYOK adapters. The deterministic demo provider and local-only OpenAI development gateway remain optional development paths.
 
 ## Local AI development
 
@@ -29,8 +29,8 @@ $env:NNWA_ANALYSIS_PROVIDER="http"
 pnpm --dir apps/obsidian-plugin build
 ```
 
-Install or copy the resulting `apps/obsidian-plugin/dist` files into a test Vault using your normal local workflow, then reload the plugin in Obsidian. No Vault path is encoded in this repository. Omit `NNWA_ANALYSIS_PROVIDER`, or set it to `demo`, to build with the demo provider.
+Install or copy the resulting `apps/obsidian-plugin/dist` files into a test Vault using your normal local workflow, then reload the plugin in Obsidian. No Vault path is encoded in this repository. Omit `NNWA_ANALYSIS_PROVIDER` to build the direct provider-profile mode, or set it to `demo` for deterministic development output.
 
 The development endpoint is `POST /v1/analyze`. It accepts source text, native and target language identifiers, and an optional current confirmed native intent. It returns an optional native-intent result plus one or more normalized expressions. For this phase the host uses `zh-CN` as the native language and `en` as the target language.
 
-A production release using the gateway path must replace the localhost URL with an appropriately secured deployment. The development gateway intentionally has no authentication, accounts, persistence, streaming, caching, or deployment configuration and must not be exposed beyond localhost. Direct BYOK profiles will keep only a `SecretStorage` reference in profile configuration; the settings workflow for creating those profiles is deferred.
+A production release using the gateway path must replace the localhost URL with an appropriately secured deployment. The development gateway intentionally has no authentication, accounts, persistence, streaming, caching, or deployment configuration and must not be exposed beyond localhost. Direct BYOK profiles persist only a `SecretStorage` reference; resolved API keys remain in Obsidian's secret storage.

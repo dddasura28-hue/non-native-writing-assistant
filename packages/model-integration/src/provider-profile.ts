@@ -5,6 +5,9 @@ export type StructuredOutputMode =
   | "json-object"
   | "prompt-json";
 
+export const STRUCTURED_OUTPUT_MODES: readonly StructuredOutputMode[] =
+  Object.freeze(["json-schema", "json-object", "prompt-json"]);
+
 export interface ProviderProfile {
   readonly id: string;
   readonly name: string;
@@ -27,6 +30,16 @@ export function createProviderProfile(
 
   if (profile.baseUrl !== undefined) {
     validateBaseUrl(profile.baseUrl);
+  }
+
+  if (
+    profile.compatibilityMode !== undefined &&
+    !STRUCTURED_OUTPUT_MODES.includes(profile.compatibilityMode)
+  ) {
+    throw new WritingModelError(
+      "invalid-profile",
+      "Provider compatibility mode is not supported.",
+    );
   }
 
   return Object.freeze({ ...profile });

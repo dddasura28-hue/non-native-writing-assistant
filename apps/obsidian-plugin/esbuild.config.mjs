@@ -6,7 +6,7 @@ import { build } from "esbuild";
 
 const appDirectory = dirname(fileURLToPath(import.meta.url));
 const outputDirectory = join(appDirectory, "dist");
-const analysisProvider = process.env.NNWA_ANALYSIS_PROVIDER ?? "demo";
+const analysisProvider = process.env.NNWA_ANALYSIS_PROVIDER ?? "profile";
 
 if (
   analysisProvider !== "demo" &&

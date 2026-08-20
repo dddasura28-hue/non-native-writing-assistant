@@ -1,4 +1,4 @@
-import { ItemView, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 
 import {
   createEmptyViewModel,
@@ -6,6 +6,7 @@ import {
   type WritingAssistantViewModel,
 } from "./presentation.js";
 import type { WritingAssistantPresenter } from "./writing-assistant-controller.js";
+import type { ProviderProfileSelectionSource } from "./settings/provider-profile-store.js";
 
 export const WRITING_ASSISTANT_VIEW_TYPE = "non-native-writing-assistant-view";
 
@@ -13,10 +14,16 @@ export class WritingAssistantView
   extends ItemView
   implements WritingAssistantPresenter
 {
+  readonly #profileSelection: ProviderProfileSelectionSource | undefined;
   #viewModel: WritingAssistantViewModel = createEmptyViewModel();
+  #unsubscribeProfileSelection: (() => void) | undefined;
 
-  constructor(leaf: WorkspaceLeaf) {
+  constructor(
+    leaf: WorkspaceLeaf,
+    profileSelection?: ProviderProfileSelectionSource,
+  ) {
     super(leaf);
+    this.#profileSelection = profileSelection;
   }
 
   getViewType(): string {
@@ -32,10 +39,15 @@ export class WritingAssistantView
   }
 
   async onOpen(): Promise<void> {
+    this.#unsubscribeProfileSelection = this.#profileSelection?.onDidUpdate(
+      () => this.#render(),
+    );
     this.#render();
   }
 
   async onClose(): Promise<void> {
+    this.#unsubscribeProfileSelection?.();
+    this.#unsubscribeProfileSelection = undefined;
     this.contentEl.empty();
   }
 
@@ -53,6 +65,8 @@ export class WritingAssistantView
       cls: "nnwa-panel__heading",
       text: "Writing Assistant",
     });
+
+    this.#renderProfileSelector(root);
 
     const statusText = this.#viewModel.statusDetail
       ? `${this.#viewModel.status}: ${this.#viewModel.statusDetail}`
@@ -72,6 +86,57 @@ export class WritingAssistantView
       this.#viewModel.normalizedTracks,
       "No normalized expression available.",
     );
+  }
+
+  #renderProfileSelector(root: HTMLElement): void {
+    if (this.#profileSelection === undefined) {
+      return;
+    }
+
+    const state = this.#profileSelection.getSelectionState();
+    const container = root.createDiv({ cls: "nnwa-panel__profile" });
+    container.createEl("label", {
+      attr: { for: "nnwa-active-profile" },
+      text: "AI profile",
+    });
+    const select = container.createEl("select", {
+      attr: { id: "nnwa-active-profile" },
+    });
+
+    if (state.profiles.length === 0) {
+      select.createEl("option", {
+        attr: { value: "" },
+        text: "Configure in settings",
+      });
+      select.disabled = true;
+      container.createDiv({
+        cls: "nnwa-panel__empty",
+        text: "Configure an AI provider in settings.",
+      });
+      return;
+    }
+
+    if (state.activeProfileId === null) {
+      select.createEl("option", {
+        attr: { value: "" },
+        text: "Select a profile",
+      });
+    }
+    for (const profile of state.profiles) {
+      select.createEl("option", {
+        attr: { value: profile.id },
+        text: profile.name,
+      });
+    }
+    select.value = state.activeProfileId ?? "";
+    select.disabled = state.profiles.length < 2 && state.activeProfileId !== null;
+    select.addEventListener("change", () => {
+      void this.#profileSelection
+        ?.setActiveProfileId(select.value.length === 0 ? null : select.value)
+        .catch(() => {
+          new Notice("Could not change the active AI profile.");
+        });
+    });
   }
 
   #renderSource(root: HTMLElement): void {
