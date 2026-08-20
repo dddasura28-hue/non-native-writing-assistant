@@ -3,7 +3,9 @@
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "scripts": {
+    "build:gateway": "pnpm --filter @non-native-writing/dev-ai-gateway build",
     "build:obsidian": "pnpm --filter @non-native-writing/obsidian-plugin build",
+    "dev:gateway": "pnpm --filter @non-native-writing/dev-ai-gateway dev",
     "test": "pnpm --recursive test",
     "typecheck": "pnpm --recursive typecheck"
   },

@@ -7,6 +7,11 @@ import {
 import { AnalysisCoordinator } from "@non-native-writing/application";
 
 import { DemoAnalysisProvider } from "./demo-analysis-provider.js";
+import {
+  DEVELOPMENT_ANALYSIS_PROVIDER,
+  DEVELOPMENT_GATEWAY_URL,
+} from "./development-configuration.js";
+import { HttpAnalysisProvider } from "./http-analysis-provider.js";
 import { ObsidianSourceAdapter } from "./obsidian-source-adapter.js";
 import { WritingAssistantController } from "./writing-assistant-controller.js";
 import {
@@ -24,7 +29,11 @@ export default class NonNativeWritingAssistantPlugin extends Plugin {
       (leaf) => new WritingAssistantView(leaf),
     );
 
-    const coordinator = new AnalysisCoordinator(new DemoAnalysisProvider());
+    const provider =
+      DEVELOPMENT_ANALYSIS_PROVIDER === "http"
+        ? new HttpAnalysisProvider(DEVELOPMENT_GATEWAY_URL)
+        : new DemoAnalysisProvider();
+    const coordinator = new AnalysisCoordinator(provider);
     this.#controller = new WritingAssistantController(
       coordinator,
       () => this.#revealWritingAssistant(),

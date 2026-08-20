@@ -1,6 +1,5 @@
 import {
   AnalysisCoordinator,
-  type AnalysisConfiguration,
   type AnalysisOutcome,
 } from "@non-native-writing/application";
 import {
@@ -11,21 +10,13 @@ import {
 import type { TrackId } from "@non-native-writing/core";
 
 import { DebouncedAnalysisScheduler } from "./debounced-analysis-scheduler.js";
+import { DEVELOPMENT_ANALYSIS_CONFIGURATION } from "./development-configuration.js";
 import {
   createViewModel,
   statusForOutcome,
   type AnalysisStatus,
   type WritingAssistantViewModel,
 } from "./presentation.js";
-
-const DEMO_CONFIGURATION: AnalysisConfiguration = Object.freeze({
-  assistPolicyFingerprint: "demo-assist-policy:v1",
-  styleProfileFingerprint: "demo-style-profile:v1",
-  languageConfigurationFingerprint: "demo-languages:v1",
-  processorConfigurationFingerprint: "demo-analysis:v1",
-  targetLanguageId: "target-demo",
-  nativeLanguageId: "native-demo",
-});
 
 export interface WritingAssistantPresenter {
   present(viewModel: WritingAssistantViewModel): void;
@@ -177,7 +168,7 @@ export class WritingAssistantController {
 
     const outcome = await this.#coordinator.analyze(
       state.segment,
-      DEMO_CONFIGURATION,
+      DEVELOPMENT_ANALYSIS_CONFIGURATION,
     );
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
