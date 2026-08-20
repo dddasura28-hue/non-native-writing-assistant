@@ -100,6 +100,30 @@ Host positions are mappings, not segment identity. The Obsidian adapter may map 
 
 Every source edit advances the source revision and invalidates results that consumed an earlier revision. Editing another input track advances that track's revision and invalidates its downstream dependents. Segment splitting, merging, and identity preservation require explicit domain operations so results cannot accidentally migrate to different text.
 
+## WritingUnit analysis abstraction
+
+A `WritingUnit` is an immutable, host-neutral application-layer value representing a source-mappable fragment within a selected writing segment. It exists to prepare for future incremental analysis, sentence-level assistance, local regeneration, and explicit Accept/Reject mapping without moving those behaviors into the current MVP flow.
+
+Each unit contains an ephemeral string identifier, the exact source text it represents, a UTF-16 half-open range relative to the segmented `ContextSelection.activeText`, and a zero-based order within that segmentation result. The range must slice back to the unit text exactly. Units do not contain provider data, AI output, language configuration, host types, or file paths.
+
+Unit identity is stable only within one selection analysis. V1 uses deterministic order-based identifiers and intentionally does not attempt persistence across source edits, diff-based tracking, or semantic matching.
+
+The initial `SimpleWritingUnitSegmenter` is deterministic. It includes sentence-ending punctuation (`.`, `!`, `?`, `。`, `！`, and `？`) in the preceding unit and also splits at blank-line paragraph breaks. It retains unfinished text, emits no empty or whitespace-only units, excludes inter-unit sentence whitespace and paragraph separators, and otherwise preserves every character inside each unit range without trimming. It is deliberately language-agnostic and does not attempt abbreviation, decimal, or NLP-aware sentence detection.
+
+This is an available parallel capability:
+
+```text
+TextContext → ContextSelection → WritingUnitSegmenter → WritingUnit[]
+```
+
+The active analysis path remains unchanged:
+
+```text
+ContextSelection → WritingSegment → Analysis
+```
+
+Writing units do not yet alter snapshots, processors, provider requests, debouncing, or presentation.
+
 ## State ownership
 
 Domain content consists of source tracks, derived tracks, provenance, revisions, and dependency information. These concepts express what was written or derived and the inputs on which derived content depends.
