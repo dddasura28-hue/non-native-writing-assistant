@@ -7,5 +7,6 @@ export * from "./context-selector.js";
 export * from "./text-context.js";
 export * from "./unit-analysis-manager.js";
 export * from "./unit-analysis-state.js";
+export * from "./unit-source-fingerprint.js";
 export * from "./writing-unit.js";
 export * from "./writing-unit-segmenter.js";

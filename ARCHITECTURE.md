@@ -106,7 +106,7 @@ A `WritingUnit` is an immutable, host-neutral application-layer value representi
 
 Each unit contains an ephemeral string identifier, the exact source text it represents, a UTF-16 half-open range relative to the segmented `ContextSelection.activeText`, and a zero-based order within that segmentation result. The range must slice back to the unit text exactly. Units do not contain provider data, AI output, language configuration, host types, or file paths.
 
-Unit identity is stable only within one selection analysis. V1 uses deterministic order-based identifiers and intentionally does not attempt persistence across source edits, diff-based tracking, or semantic matching.
+Unit identity is stable only within one selection analysis. V1 uses deterministic positional identifiers such as `writing-unit:0`; equality of those ephemeral IDs alone is not evidence that previously analyzed content is still current. Persistent identity across source edits, diff-based relocation tracking, and semantic matching remain intentionally deferred.
 
 The initial `SimpleWritingUnitSegmenter` is deterministic. It includes sentence-ending punctuation (`.`, `!`, `?`, `。`, `！`, and `？`) in the preceding unit and also splits at blank-line paragraph breaks. It retains unfinished text, emits no empty or whitespace-only units, excludes inter-unit sentence whitespace and paragraph separators, and otherwise preserves every character inside each unit range without trimming. It is deliberately language-agnostic and does not attempt abbreviation, decimal, or NLP-aware sentence detection.
 
@@ -127,10 +127,12 @@ Writing units do not yet alter snapshots, processors, provider requests, debounc
 `WritingUnit`, `UnitAnalysisState`, and tracks have intentionally separate responsibilities:
 
 - a `WritingUnit` is an addressable source region within one selection analysis;
-- a `UnitAnalysisState` is an immutable application-layer snapshot of that unit's analysis lifecycle, source revision, and optional opaque result; and
+- a `UnitAnalysisState` is an immutable application-layer snapshot of that unit's analysis lifecycle, source revision, explicit unit-source fingerprint when analyzed, and optional opaque result; and
 - a derived track is generated content with domain provenance and dependency information.
 
-`UnitAnalysisManager` synchronizes lifecycle states by ephemeral unit ID: new units receive idle state, existing states are preserved, and removed units are discarded. Duplicate IDs are rejected. An idle state begins with source revision `0`, meaning that no analyzed source revision has been associated yet. The manager is scoped to one selection analysis and performs no persistent identity or cross-edit matching.
+The unit-source fingerprint is a deterministic, non-cryptographic change detector over the exact unit text and its UTF-16 source-range start and end. It answers only whether unit analysis is associated with the same source; it contains no provider, model, policy, native-intent, or UI dependency and is deliberately separate from `DependencyStamp`.
+
+`UnitAnalysisManager` synchronizes lifecycle states by both ephemeral unit ID and unit-source fingerprint. The same ID with the same text and range preserves its immutable state. New units and units whose text or relevant range changed receive fresh idle state with revision `0`, no analyzed-source fingerprint, and no result; old results are discarded rather than retained as stale because v1 has no consumer for them. Removed units are discarded and duplicate IDs are rejected atomically. Individual immutable replacements are accepted only for a known ID and the currently synchronized source. The manager remains scoped to one selection analysis and performs no persistent identity or cross-edit matching.
 
 This state boundary remains an available capability only:
 
