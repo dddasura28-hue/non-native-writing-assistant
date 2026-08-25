@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { createDependencyStamp } from "@non-native-writing/core";
 
 import {
   UnitAnalysisManager,
+  createUnitAnalysisResult,
   createUnitAnalysisState,
   createUnitSourceFingerprint,
   createWritingUnit,
   isUnitAnalysisStateCurrent,
   markUnitAnalysisAnalyzing,
   markUnitAnalysisCompleted,
+  type UnitAnalysisResult,
   type UnitAnalysisState,
   type WritingUnit,
 } from "../src/index.js";
@@ -30,7 +33,7 @@ function unit(
 function complete(
   manager: UnitAnalysisManager,
   writingUnit: WritingUnit,
-  result: unknown = Object.freeze({ normalized: "Natural expression" }),
+  result: UnitAnalysisResult = analysisResult(),
 ): UnitAnalysisState {
   const analyzing = markUnitAnalysisAnalyzing(writingUnit, 3);
   manager.setState(writingUnit.id, analyzing);
@@ -41,6 +44,27 @@ function complete(
   );
   manager.setState(writingUnit.id, completed);
   return manager.getState(writingUnit.id)!;
+}
+
+function analysisResult(
+  normalizedText = "Natural expression",
+): UnitAnalysisResult {
+  return createUnitAnalysisResult({
+    nativeIntent: null,
+    normalized: [{ text: normalizedText, label: null }],
+    dependencyStamp: dependencyStamp(),
+  });
+}
+
+function dependencyStamp() {
+  return createDependencyStamp({
+    sourceRevision: 3,
+    assistPolicyFingerprint: "assist:test",
+    styleProfileFingerprint: "style:test",
+    languageConfigurationFingerprint: "languages:test",
+    processorConfigurationFingerprint: "processor:test",
+    contextFingerprint: "context:test",
+  });
 }
 
 describe("unit source identity", () => {
@@ -82,7 +106,7 @@ describe("UnitAnalysisState", () => {
   it("stores an immutable completed result for a specific source", () => {
     const writingUnit = unit("unit-a", "Draft.");
     const analyzing = markUnitAnalysisAnalyzing(writingUnit, 3);
-    const result = Object.freeze({ normalized: "Natural expression" });
+    const result = analysisResult();
     const completed = markUnitAnalysisCompleted(
       analyzing,
       writingUnit,
@@ -97,25 +121,34 @@ describe("UnitAnalysisState", () => {
       result,
     });
     expect(Object.isFrozen(completed)).toBe(true);
-    expect(completed.result).toBe(result);
+    expect(completed.result).toEqual(result);
+    expect(Object.isFrozen(completed.result)).toBe(true);
+    expect(Object.isFrozen(completed.result?.normalized)).toBe(true);
   });
 
   it("treats a completed state as current only for matching unit source", () => {
     const original = unit("unit-a", "Original.");
     const analyzing = markUnitAnalysisAnalyzing(original, 1);
     const completed = markUnitAnalysisCompleted(analyzing, original, {
-      normalized: "Original.",
+      ...analysisResult("Original."),
     });
 
-    expect(isUnitAnalysisStateCurrent(completed, original)).toBe(true);
+    expect(
+      isUnitAnalysisStateCurrent(completed, original, dependencyStamp()),
+    ).toBe(true);
     expect(
       isUnitAnalysisStateCurrent(
         completed,
         unit("unit-a", "Edited source.", 0),
+        dependencyStamp(),
       ),
     ).toBe(false);
     expect(
-      isUnitAnalysisStateCurrent(completed, unit("unit-a", "Original.", 5)),
+      isUnitAnalysisStateCurrent(
+        completed,
+        unit("unit-a", "Original.", 5),
+        dependencyStamp(),
+      ),
     ).toBe(false);
   });
 
@@ -136,7 +169,7 @@ describe("UnitAnalysisState", () => {
         status: "completed",
         sourceRevision: 1,
         sourceFingerprint: null,
-        result: { normalized: "Result" },
+        result: analysisResult("Result"),
       }),
     ).toThrow(/fingerprint/i);
   });
@@ -260,13 +293,15 @@ describe("UnitAnalysisManager", () => {
   it("stores a completed result only for its synchronized source", () => {
     const manager = new UnitAnalysisManager();
     const writingUnit = unit("unit-a", "Draft.");
-    const result = Object.freeze({ normalized: "Revised draft." });
+    const result = analysisResult("Revised draft.");
     manager.synchronize([writingUnit]);
 
     const completed = complete(manager, writingUnit, result);
 
-    expect(manager.getState(writingUnit.id)?.result).toBe(result);
-    expect(isUnitAnalysisStateCurrent(completed, writingUnit)).toBe(true);
+    expect(manager.getState(writingUnit.id)?.result).toEqual(result);
+    expect(
+      isUnitAnalysisStateCurrent(completed, writingUnit, dependencyStamp()),
+    ).toBe(true);
   });
 
   it("rejects state targeted at the wrong or unknown unit ID", () => {
@@ -289,7 +324,9 @@ describe("UnitAnalysisManager", () => {
 
     manager.synchronize([edited]);
 
-    expect(isUnitAnalysisStateCurrent(completed, edited)).toBe(false);
+    expect(
+      isUnitAnalysisStateCurrent(completed, edited, dependencyStamp()),
+    ).toBe(false);
     expect(() => manager.setState(edited.id, completed)).toThrow(/source/i);
     expect(manager.getState(edited.id)?.status).toBe("idle");
   });

@@ -1,15 +1,20 @@
 import {
   AnalysisCoordinator,
+  IncrementalUnitAnalysisCoordinator,
   LocalBlockContextSelector,
+  SimpleWritingUnitSegmenter,
   assertContextSelectionMapsToText,
   createAnalysisContext,
   createWholeAvailableAnalysisContext,
+  selectCurrentWritingUnit,
   type AnalysisConfiguration,
   type AnalysisContext,
   type AnalysisOutcome,
   type ContextSelection,
   type ContextSelector,
   type TextContext,
+  type WritingUnit,
+  type WritingUnitSegmenter,
 } from "@non-native-writing/application";
 import {
   WritingSegment,
@@ -45,6 +50,7 @@ export interface WritingAssistantControllerOptions {
   readonly getAutomaticPresenter?: GetWritingAssistant;
   readonly analysisConfigurationSource?: AnalysisConfigurationSource;
   readonly contextSelector?: ContextSelector;
+  readonly writingUnitSegmenter?: WritingUnitSegmenter;
 }
 
 export type RevealWritingAssistant = () => Promise<WritingAssistantPresenter>;
@@ -55,6 +61,12 @@ export type GetWritingAssistant = () => Promise<
 interface DocumentState {
   readonly documentKey: string;
   segment: WritingSegment;
+  readonly unitAnalysis: IncrementalUnitAnalysisCoordinator;
+  units: readonly WritingUnit[];
+  currentUnitId: string | null;
+  explicitSelection: boolean;
+  selectedSource: SelectedDocumentSource;
+  configuration: AnalysisConfiguration;
   analysisTarget: DocumentAnalysisTarget | null;
   documentRunNumber: number;
   visibleTrackIds: readonly TrackId[];
@@ -71,6 +83,8 @@ interface SourceActivation {
 interface SelectedDocumentSource {
   readonly documentKey: string;
   readonly selection: ContextSelection | null;
+  readonly explicitSelection: boolean;
+  readonly cursorOffset: number;
 }
 
 interface DocumentAnalysisTarget {
@@ -87,6 +101,7 @@ export class WritingAssistantController {
   readonly #debouncedAnalysis: DebouncedAnalysisScheduler<SelectedDocumentSource>;
   readonly #analysisConfigurationSource: AnalysisConfigurationSource;
   readonly #contextSelector: ContextSelector;
+  readonly #writingUnitSegmenter: WritingUnitSegmenter;
   readonly #unsubscribeAnalysisConfiguration: () => void;
   readonly #documents = new Map<string, DocumentState>();
 
@@ -111,6 +126,8 @@ export class WritingAssistantController {
       );
     this.#contextSelector =
       options.contextSelector ?? new LocalBlockContextSelector();
+    this.#writingUnitSegmenter =
+      options.writingUnitSegmenter ?? new SimpleWritingUnitSegmenter();
     this.#unsubscribeAnalysisConfiguration =
       this.#analysisConfigurationSource.onDidChange(() => {
         this.#handleAnalysisConfigurationChange();
@@ -141,6 +158,7 @@ export class WritingAssistantController {
     if (source.selection === null) {
       this.#debouncedAnalysis.cancel();
       this.#coordinator.cancelAnalysis(state.segment.id);
+      state.unitAnalysis.cancel();
       state.documentRunNumber += 1;
       resetPresentationState(state);
       this.#queuePresentation(state);
@@ -168,7 +186,7 @@ export class WritingAssistantController {
 
     const state = this.#documents.get(this.#activeDocumentKey);
     if (state !== undefined) {
-      presenter.present(viewModelFor(state));
+      presenter.present(this.#viewModelFor(state));
     }
   }
 
@@ -185,15 +203,19 @@ export class WritingAssistantController {
     const documentRunNumber = ++state.documentRunNumber;
 
     this.#coordinator.cancelAnalysis(state.segment.id);
+    state.unitAnalysis.cancel();
 
-    if (source.selection === null) {
+    if (
+      source.selection === null ||
+      (!state.explicitSelection && state.currentUnitId === null)
+    ) {
       resetPresentationState(state);
       const presenter = await this.#getPresenter(revealView);
       if (
         presenter !== undefined &&
         this.#isCurrentDocumentRun(state, documentRunNumber)
       ) {
-        presenter.present(viewModelFor(state));
+        presenter.present(this.#viewModelFor(state));
       }
       return undefined;
     }
@@ -207,13 +229,17 @@ export class WritingAssistantController {
       return undefined;
     }
 
-    presenter?.present(viewModelFor(state));
+    presenter?.present(this.#viewModelFor(state));
 
-    const outcome = await this.#coordinator.analyze(
-      state.segment,
-      this.#analysisConfigurationSource.getConfiguration(),
-      state.analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
-    );
+    const configuration = this.#analysisConfigurationSource.getConfiguration();
+    state.configuration = configuration;
+    const outcome = state.explicitSelection
+      ? await this.#coordinator.analyze(
+          state.segment,
+          configuration,
+          state.analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
+        )
+      : await state.unitAnalysis.analyze(state.currentUnitId!, configuration);
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
       return outcome;
@@ -234,7 +260,7 @@ export class WritingAssistantController {
       this.#activeDocumentKey === state.documentKey
     ) {
       this.#presentationGeneration += 1;
-      presenter.present(viewModelFor(state));
+      presenter.present(this.#viewModelFor(state));
     }
 
     return outcome;
@@ -253,6 +279,7 @@ export class WritingAssistantController {
     for (const state of this.#documents.values()) {
       state.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(state.segment.id);
+      state.unitAnalysis.cancel();
     }
   }
 
@@ -267,11 +294,16 @@ export class WritingAssistantController {
       // Update the dependency context before cancellation so any late result
       // is stale by DependencyStamp comparison, even if transport ignores abort.
       this.#coordinator.updateConfiguration(state.segment.id, configuration);
+      state.configuration = configuration;
+      state.unitAnalysis.updateConfiguration(configuration);
       this.#coordinator.cancelAnalysis(state.segment.id);
       state.documentRunNumber += 1;
       resetPresentationState(state);
       if (state.documentKey === this.#activeDocumentKey) {
         this.#queuePresentation(state);
+        if (state.selectedSource.selection !== null) {
+          this.#debouncedAnalysis.schedule(state.selectedSource);
+        }
       }
     }
   }
@@ -287,11 +319,18 @@ export class WritingAssistantController {
     const documentCreated = state === undefined;
     const sourceText = source.selection?.activeText ?? "";
     const analysisTarget = createDocumentAnalysisTarget(source.selection);
+    const configuration = this.#analysisConfigurationSource.getConfiguration();
 
     if (state === undefined) {
       state = {
         documentKey: source.documentKey,
         segment: this.#createSegment(sourceText),
+        unitAnalysis: new IncrementalUnitAnalysisCoordinator(this.#coordinator),
+        units: Object.freeze([]),
+        currentUnitId: null,
+        explicitSelection: source.explicitSelection,
+        selectedSource: source,
+        configuration,
         analysisTarget,
         documentRunNumber: 0,
         visibleTrackIds: Object.freeze([]),
@@ -307,6 +346,7 @@ export class WritingAssistantController {
     if (documentChanged && previousState !== undefined) {
       previousState.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(previousState.segment.id);
+      previousState.unitAnalysis.cancel();
       if (previousState.status === "Analyzing") {
         previousState.status = "Aborted";
         previousState.statusDetail = undefined;
@@ -322,7 +362,9 @@ export class WritingAssistantController {
     const targetChanged =
       state.analysisTarget?.analysisContext.contextFingerprint !==
       analysisTarget?.analysisContext.contextFingerprint;
-    if (sourceChanged || targetChanged) {
+    const selectionModeChanged =
+      state.explicitSelection !== source.explicitSelection;
+    if (sourceChanged || targetChanged || selectionModeChanged) {
       state.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(state.segment.id);
       if (sourceLocationChanged && !sourceChanged) {
@@ -342,6 +384,34 @@ export class WritingAssistantController {
       resetPresentationState(state);
     }
 
+    state.explicitSelection = source.explicitSelection;
+    state.selectedSource = source;
+    state.configuration = configuration;
+    const currentUnitChanged = this.#synchronizeUnitAnalysis(state, source);
+    const activeUnitNeedsAnalysis =
+      !state.explicitSelection &&
+      state.currentUnitId !== null &&
+      state.unitAnalysis.getCurrentResult(
+        state.currentUnitId,
+        configuration,
+      ) === null;
+
+    if (currentUnitChanged) {
+      state.documentRunNumber += 1;
+      state.unitAnalysis.cancel();
+      if (
+        !state.explicitSelection &&
+        state.currentUnitId !== null &&
+        !activeUnitNeedsAnalysis
+      ) {
+        state.status = "Applied";
+        state.statusDetail = undefined;
+        state.visibleTrackIds = Object.freeze([]);
+      } else {
+        resetPresentationState(state);
+      }
+    }
+
     this.#activeDocumentKey = source.documentKey;
 
     return {
@@ -352,6 +422,8 @@ export class WritingAssistantController {
         (documentCreated ||
           sourceChanged ||
           targetChanged ||
+          selectionModeChanged ||
+          (currentUnitChanged && activeUnitNeedsAnalysis) ||
           (documentChanged && state.status !== "Applied")),
     };
   }
@@ -364,6 +436,9 @@ export class WritingAssistantController {
     return Object.freeze({
       documentKey: observed.documentKey,
       selection,
+      explicitSelection:
+        selection !== null && observed.textContext.selection !== null,
+      cursorOffset: observed.textContext.cursorOffset,
     });
   }
 
@@ -397,7 +472,7 @@ export class WritingAssistantController {
       return;
     }
 
-    presenter.present(viewModelFor(state));
+    presenter.present(this.#viewModelFor(state));
   }
 
   async #getPresenter(
@@ -424,6 +499,61 @@ export class WritingAssistantController {
       !this.#disposed &&
       this.#activeDocumentKey === state.documentKey &&
       state.documentRunNumber === documentRunNumber
+    );
+  }
+
+  #synchronizeUnitAnalysis(
+    state: DocumentState,
+    source: SelectedDocumentSource,
+  ): boolean {
+    const previousCurrentUnitId = state.currentUnitId;
+    if (source.selection === null || source.explicitSelection) {
+      state.unitAnalysis.clear();
+      state.units = Object.freeze([]);
+      state.currentUnitId = null;
+      return previousCurrentUnitId !== null;
+    }
+
+    const units = this.#writingUnitSegmenter.segment(
+      source.selection.activeText,
+    );
+    state.unitAnalysis.synchronize(source.selection, units);
+    state.unitAnalysis.updateConfiguration(state.configuration);
+    state.units = units;
+
+    const cursorRelativeOffset = Math.min(
+      Math.max(
+        source.cursorOffset - source.selection.sourceRange.start,
+        0,
+      ),
+      source.selection.activeText.length,
+    );
+    state.currentUnitId =
+      selectCurrentWritingUnit(units, cursorRelativeOffset)?.id ?? null;
+    return state.currentUnitId !== previousCurrentUnitId;
+  }
+
+  #viewModelFor(state: DocumentState): WritingAssistantViewModel {
+    if (!state.explicitSelection && state.currentUnitId !== null) {
+      const record = state.unitAnalysis.getRecord(state.currentUnitId);
+      if (record !== null) {
+        return createViewModel(
+          record.segment,
+          state.status,
+          state.unitAnalysis.getCurrentTrackIds(
+            state.currentUnitId,
+            state.configuration,
+          ),
+          state.statusDetail,
+        );
+      }
+    }
+
+    return createViewModel(
+      state.segment,
+      state.status,
+      state.visibleTrackIds,
+      state.statusDetail,
     );
   }
 }
@@ -456,15 +586,6 @@ function resetPresentationState(state: DocumentState): void {
   state.status = "Idle";
   state.statusDetail = undefined;
   state.visibleTrackIds = Object.freeze([]);
-}
-
-function viewModelFor(state: DocumentState): WritingAssistantViewModel {
-  return createViewModel(
-    state.segment,
-    state.status,
-    state.visibleTrackIds,
-    state.statusDetail,
-  );
 }
 
 function describeError(error: unknown): string {

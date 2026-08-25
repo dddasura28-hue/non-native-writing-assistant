@@ -1,7 +1,16 @@
 import {
+  dependencyStampMatches,
+  type DependencyStamp,
+} from "@non-native-writing/core";
+
+import {
   createUnitSourceFingerprint,
   type UnitSourceFingerprint,
 } from "./unit-source-fingerprint.js";
+import {
+  createUnitAnalysisResult,
+  type UnitAnalysisResult,
+} from "./unit-analysis-result.js";
 import type { WritingUnit } from "./writing-unit.js";
 
 export const UNIT_ANALYSIS_STATUSES = Object.freeze([
@@ -21,8 +30,11 @@ export interface UnitAnalysisState {
   readonly sourceRevision: number;
   /** Null only when idle and no source has yet been analyzed. */
   readonly sourceFingerprint: UnitSourceFingerprint | null;
-  /** Opaque analysis output, or null when no result is stored. */
-  readonly result: unknown | null;
+  /**
+   * Provider-neutral generated content. Stale/analyzing/failed states may
+   * retain an older result, but only a current completed state is presentable.
+   */
+  readonly result: UnitAnalysisResult | null;
 }
 
 export function createUnitAnalysisState(
@@ -59,17 +71,18 @@ export function createUnitAnalysisState(
     );
   }
 
-  if (state.status === "analyzing" && state.result !== null) {
-    throw new TypeError(
-      "An analyzing UnitAnalysisState must not contain a result.",
-    );
-  }
-
   if (state.status === "completed" && state.result === null) {
     throw new TypeError("A completed UnitAnalysisState requires a result.");
   }
+  if (state.status === "stale" && state.result === null) {
+    throw new TypeError("A stale UnitAnalysisState requires an older result.");
+  }
 
-  return Object.freeze({ ...state });
+  return Object.freeze({
+    ...state,
+    result:
+      state.result === null ? null : createUnitAnalysisResult(state.result),
+  });
 }
 
 export function createIdleUnitAnalysisState(
@@ -87,20 +100,21 @@ export function createIdleUnitAnalysisState(
 export function markUnitAnalysisAnalyzing(
   unit: WritingUnit,
   sourceRevision: number,
+  previousResult: UnitAnalysisResult | null = null,
 ): UnitAnalysisState {
   return createUnitAnalysisState({
     unitId: unit.id,
     status: "analyzing",
     sourceRevision,
     sourceFingerprint: createUnitSourceFingerprint(unit),
-    result: null,
+    result: previousResult,
   });
 }
 
 export function markUnitAnalysisCompleted(
   state: UnitAnalysisState,
   unit: WritingUnit,
-  result: unknown,
+  result: UnitAnalysisResult,
 ): UnitAnalysisState {
   if (state.status !== "analyzing") {
     throw new TypeError("Only an analyzing UnitAnalysisState can complete.");
@@ -126,14 +140,80 @@ export function markUnitAnalysisCompleted(
   });
 }
 
-/** True only when a completed result belongs to this exact unit source. */
+export function markUnitAnalysisStale(
+  state: UnitAnalysisState,
+  unit: WritingUnit,
+): UnitAnalysisState {
+  assertStateMatchesUnitSource(state, unit);
+  if (state.result === null) {
+    throw new TypeError("A stale UnitAnalysisState requires an older result.");
+  }
+
+  return createUnitAnalysisState({ ...state, status: "stale" });
+}
+
+export function markUnitAnalysisFailed(
+  state: UnitAnalysisState,
+  unit: WritingUnit,
+): UnitAnalysisState {
+  return markUnitAnalysisStopped(state, unit, "failed");
+}
+
+export function restoreUnitAnalysisCompleted(
+  state: UnitAnalysisState,
+  unit: WritingUnit,
+): UnitAnalysisState {
+  assertStateMatchesUnitSource(state, unit);
+  if (state.result === null) {
+    throw new TypeError("A completed UnitAnalysisState requires a result.");
+  }
+
+  return createUnitAnalysisState({ ...state, status: "completed" });
+}
+
+/** True only when completed output matches both source and analysis inputs. */
 export function isUnitAnalysisStateCurrent(
   state: UnitAnalysisState,
   unit: WritingUnit,
+  currentDependencyStamp: DependencyStamp,
 ): boolean {
   return (
     state.status === "completed" &&
     state.unitId === unit.id &&
-    state.sourceFingerprint === createUnitSourceFingerprint(unit)
+    state.sourceFingerprint === createUnitSourceFingerprint(unit) &&
+    state.result !== null &&
+    dependencyStampMatches(
+      state.result.dependencyStamp,
+      currentDependencyStamp,
+    )
   );
+}
+
+function markUnitAnalysisStopped(
+  state: UnitAnalysisState,
+  unit: WritingUnit,
+  status: "failed",
+): UnitAnalysisState {
+  if (state.status !== "analyzing") {
+    throw new TypeError("Only an analyzing UnitAnalysisState can stop.");
+  }
+  assertStateMatchesUnitSource(state, unit);
+
+  return createUnitAnalysisState({
+    ...state,
+    status,
+  });
+}
+
+function assertStateMatchesUnitSource(
+  state: UnitAnalysisState,
+  unit: WritingUnit,
+): void {
+  if (
+    state.status === "idle" ||
+    state.unitId !== unit.id ||
+    state.sourceFingerprint !== createUnitSourceFingerprint(unit)
+  ) {
+    throw new TypeError("UnitAnalysisState must match the same unit source.");
+  }
 }

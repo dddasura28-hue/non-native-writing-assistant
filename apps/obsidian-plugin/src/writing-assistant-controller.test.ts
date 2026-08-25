@@ -139,6 +139,8 @@ function createHarness(): Harness {
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function resolveApplied(request: PendingRequest): void {
@@ -163,6 +165,15 @@ function resolveNormalized(
       ]),
     }),
   );
+}
+
+async function resolveNormalizedAndFlush(
+  request: PendingRequest,
+  text: string,
+  id: string,
+): Promise<void> {
+  resolveNormalized(request, text, id);
+  await flushMicrotasks();
 }
 
 describe("WritingAssistantController automatic analysis", () => {
@@ -393,8 +404,9 @@ describe("WritingAssistantController automatic analysis", () => {
       throw new Error("Second identical block analysis did not start.");
     }
 
-    expect(secondRequest.snapshot.segmentId).not.toBe(
-      firstRequest.snapshot.segmentId,
+    expect(secondRequest.snapshot.segmentId).toBe(firstRequest.snapshot.segmentId);
+    expect(secondRequest.snapshot.dependencyStamp.contextFingerprint).not.toBe(
+      firstRequest.snapshot.dependencyStamp.contextFingerprint,
     );
     expect(secondRequest.snapshot.sourceText).toBe("Same text");
 
@@ -564,6 +576,374 @@ describe("WritingAssistantController automatic analysis", () => {
 
     await expect(outcome).resolves.toEqual({ status: "stale" });
     expect(presenter.latest.status).toBe("Idle");
+    controller.dispose();
+  });
+});
+
+describe("WritingAssistantController incremental unit analysis", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("presents and analyzes only the cursor-active sentence", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "First. Second. Third.";
+    const analysis = controller.analyze(
+      source("units.md", text, { cursorOffset: text.indexOf("Second") + 2 }),
+    );
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("Second.");
+    expect(provider.requests[0]?.snapshot.sourceText).toBe("Second.");
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "Normalized second.",
+      "second-output",
+    );
+    await analysis;
+
+    expect(presenter.latest).toMatchObject({
+      sourceText: "Second.",
+      status: "Applied",
+    });
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "Normalized second." }),
+    ]);
+    expect(provider.requests).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("reanalyzes only the active edited sentence", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const original = "One. Two. Three.";
+    const firstAnalysis = controller.analyze(
+      source("edit-unit.md", original, {
+        cursorOffset: original.indexOf("Two") + 1,
+      }),
+    );
+    await flushMicrotasks();
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "Initial second.",
+      "initial-second",
+    );
+    await firstAnalysis;
+
+    const edited = "One. Duo! Three.";
+    const secondAnalysis = controller.analyze(
+      source("edit-unit.md", edited, {
+        cursorOffset: edited.indexOf("Duo") + 1,
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(provider.requests[1]?.snapshot.sourceText).toBe("Duo!");
+    expect(presenter.latest.sourceText).toBe("Duo!");
+    await resolveNormalizedAndFlush(
+      provider.requests[1]!,
+      "Edited second.",
+      "edited-second",
+    );
+    await secondAnalysis;
+
+    expect(provider.requests).toHaveLength(2);
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "Edited second." }),
+    ]);
+    controller.dispose();
+  });
+
+  it("debounces the active edit and lazily refreshes a stale sibling on navigation", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const original = "A. B. C.";
+    const cursors = [
+      original.indexOf("A"),
+      original.indexOf("B"),
+      original.indexOf("C"),
+    ];
+
+    for (const [index, cursorOffset] of cursors.entries()) {
+      const pending = controller.analyze(
+        source("lazy-siblings.md", original, { cursorOffset }),
+      );
+      await flushMicrotasks();
+      expect(provider.requests[index]?.snapshot.sourceText).toBe(
+        ["A.", "B.", "C."][index],
+      );
+      await resolveNormalizedAndFlush(
+        provider.requests[index]!,
+        `Initial ${index}.`,
+        `lazy-initial-${index}`,
+      );
+      await pending;
+    }
+
+    const edited = "A. B. Changed C!";
+    controller.scheduleAutomaticAnalysis(
+      source("lazy-siblings.md", edited, { cursorOffset: edited.length }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.sourceText).toBe("Changed C!");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS - 1);
+    expect(provider.requests).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests[3]?.snapshot.sourceText).toBe("Changed C!");
+    await resolveNormalizedAndFlush(
+      provider.requests[3]!,
+      "Changed C normalized.",
+      "lazy-changed-c",
+    );
+
+    controller.scheduleAutomaticAnalysis(
+      source("lazy-siblings.md", edited, {
+        cursorOffset: edited.indexOf("B"),
+      }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.sourceText).toBe("B.");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS - 1);
+    expect(provider.requests).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(5);
+    expect(provider.requests[4]?.snapshot.sourceText).toBe("B.");
+    await resolveNormalizedAndFlush(
+      provider.requests[4]!,
+      "Refreshed B.",
+      "lazy-refreshed-b",
+    );
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "Refreshed B." }),
+    ]);
+    controller.dispose();
+  });
+
+  it("moves presentation to edited sentence three", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const original = "One. Two. Three.";
+    const initial = controller.analyze(
+      source("third.md", original, { cursorOffset: 1 }),
+    );
+    await flushMicrotasks();
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "Initial one.",
+      "third-initial-one",
+    );
+    await initial;
+
+    const edited = "One. Two. Tres!!";
+    const update = controller.analyze(
+      source("third.md", edited, { cursorOffset: edited.length }),
+    );
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("Tres!!");
+    expect(provider.requests[1]?.snapshot.sourceText).toBe("Tres!!");
+    await resolveNormalizedAndFlush(
+      provider.requests[1]!,
+      "Edited third.",
+      "edited-third",
+    );
+    await update;
+    expect(presenter.latest.sourceText).toBe("Tres!!");
+    controller.dispose();
+  });
+
+  it("cancels an old active unit and never lets its late result repaint a new target", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "One. Two. Three.";
+    const analysis = controller.analyze(
+      source("cursor-move.md", text, {
+        cursorOffset: text.indexOf("Two") + 1,
+      }),
+    );
+    await flushMicrotasks();
+    const sentenceTwoRequest = provider.requests[0]!;
+    expect(sentenceTwoRequest.snapshot.sourceText).toBe("Two.");
+
+    controller.scheduleAutomaticAnalysis(
+      source("cursor-move.md", text, {
+        cursorOffset: text.indexOf("Three") + 1,
+      }),
+    );
+    await flushMicrotasks();
+    expect(sentenceTwoRequest.signal.aborted).toBe(true);
+    expect(presenter.latest.sourceText).toBe("Three.");
+
+    resolveNormalized(
+      sentenceTwoRequest,
+      "Two normalized.",
+      "cursor-two",
+    );
+    await expect(analysis).resolves.toEqual({ status: "aborted" });
+    expect(presenter.latest.sourceText).toBe("Three.");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(provider.requests[1]?.snapshot.sourceText).toBe("Three.");
+    await resolveNormalizedAndFlush(
+      provider.requests[1]!,
+      "Three normalized.",
+      "cursor-three",
+    );
+    expect(presenter.latest.sourceText).toBe("Three.");
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "Three normalized." }),
+    ]);
+    controller.dispose();
+  });
+
+  it("analyzes an unfinished final unit after the existing debounce", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "I think this policy is";
+
+    controller.scheduleAutomaticAnalysis(
+      source("unfinished.md", text, { cursorOffset: text.length }),
+    );
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS - 1);
+    expect(provider.requests).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(provider.requests[0]?.snapshot.sourceText).toBe(text);
+    expect(presenter.latest.sourceText).toBe(text);
+    resolveApplied(provider.requests[0]!);
+    await flushMicrotasks();
+    controller.dispose();
+  });
+
+  it("manual Analyze targets only the cursor-active unit", async () => {
+    const { controller, provider } = createHarness();
+    const text = "First. Second.";
+    const analysis = controller.analyze(
+      source("manual-units.md", text, { cursorOffset: text.length }),
+    );
+    await flushMicrotasks();
+
+    expect(provider.requests[0]?.snapshot.sourceText).toBe("Second.");
+    resolveApplied(provider.requests[0]!);
+    await analysis;
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "Second.",
+    ]);
+    controller.dispose();
+  });
+
+  it("keeps an explicit single-sentence selection as one whole target", async () => {
+    const { controller, provider } = createHarness();
+    const text = "Before. Selected sentence. After.";
+    const start = text.indexOf("Selected");
+    const end = start + "Selected sentence.".length;
+    const analysis = controller.analyze(
+      source("single-selection.md", text, {
+        cursorOffset: end,
+        selection: { start, end },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(provider.requests[0]?.snapshot.sourceText).toBe(
+      "Selected sentence.",
+    );
+    resolveApplied(provider.requests[0]!);
+    await analysis;
+    expect(provider.requests).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("keeps an explicit multi-sentence selection as one whole target", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "First selected. Second selected. Outside.";
+    const end = text.indexOf(" Outside");
+    const selected = text.slice(0, end);
+    const analysis = controller.analyze(
+      source("multi-selection.md", text, {
+        cursorOffset: end,
+        selection: { start: 0, end },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(provider.requests[0]?.snapshot.sourceText).toBe(selected);
+    expect(presenter.latest.sourceText).toBe(selected);
+    resolveApplied(provider.requests[0]!);
+    await analysis;
+    expect(provider.requests).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("refreshes only the active unit after a profile switch and lazily refreshes another", async () => {
+    const provider = new ControlledProvider();
+    const presenter = new RecordingPresenter();
+    const configuration = new MutableAnalysisConfigurationSource();
+    const controller = new WritingAssistantController(
+      new AnalysisCoordinator(provider),
+      async () => presenter,
+      { analysisConfigurationSource: configuration },
+    );
+    const text = "One. Two. Three.";
+    const cursors = [text.indexOf("One"), text.indexOf("Two"), text.indexOf("Three")];
+    for (const [index, cursorOffset] of cursors.entries()) {
+      const initial = controller.analyze(
+        source("profile-switch.md", text, { cursorOffset }),
+      );
+      await flushMicrotasks();
+      await resolveNormalizedAndFlush(
+        provider.requests[index]!,
+        `Provider one ${index}.`,
+        `provider-one-output-${index}`,
+      );
+      await initial;
+    }
+    expect(presenter.latest.sourceText).toBe("Three.");
+
+    configuration.switchProvider();
+    await flushMicrotasks();
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+    expect(provider.requests).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
+    await flushMicrotasks();
+
+    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests[3]?.snapshot.sourceText).toBe("Three.");
+    expect(provider.requests[3]?.snapshot.dependencyStamp.processorConfigurationFingerprint)
+      .toBe("provider:two");
+    await resolveNormalizedAndFlush(
+      provider.requests[3]!,
+      "Provider two three.",
+      "provider-two-output-three",
+    );
+    expect(presenter.latest.normalizedTracks[0]?.text).toBe("Provider two three.");
+
+    controller.scheduleAutomaticAnalysis(
+      source("profile-switch.md", text, { cursorOffset: text.indexOf("Two") }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.sourceText).toBe("Two.");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+    expect(provider.requests).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(5);
+    expect(provider.requests[4]?.snapshot.sourceText).toBe("Two.");
+    expect(provider.requests[4]?.snapshot.dependencyStamp.processorConfigurationFingerprint)
+      .toBe("provider:two");
+    await resolveNormalizedAndFlush(
+      provider.requests[4]!,
+      "Provider two two.",
+      "provider-two-output-two",
+    );
+    expect(presenter.latest.normalizedTracks[0]?.text).toBe("Provider two two.");
     controller.dispose();
   });
 });

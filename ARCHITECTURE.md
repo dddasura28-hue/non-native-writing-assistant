@@ -102,7 +102,7 @@ Every source edit advances the source revision and invalidates results that cons
 
 ## WritingUnit analysis abstraction
 
-A `WritingUnit` is an immutable, host-neutral application-layer value representing a source-mappable fragment within a selected writing segment. It exists to prepare for future incremental analysis, sentence-level assistance, local regeneration, and explicit Accept/Reject mapping without moving those behaviors into the current MVP flow.
+A `WritingUnit` is an immutable, host-neutral application-layer value representing a source-mappable fragment within a selected writing segment. It supports incremental analysis, sentence-level assistance, local regeneration, and future explicit Accept/Reject mapping without moving host positions into the domain model.
 
 Each unit contains an ephemeral string identifier, the exact source text it represents, a UTF-16 half-open range relative to the segmented `ContextSelection.activeText`, and a zero-based order within that segmentation result. The range must slice back to the unit text exactly. Units do not contain provider data, AI output, language configuration, host types, or file paths.
 
@@ -110,37 +110,54 @@ Unit identity is stable only within one selection analysis. V1 uses deterministi
 
 The initial `SimpleWritingUnitSegmenter` is deterministic. It includes sentence-ending punctuation (`.`, `!`, `?`, `。`, `！`, and `？`) in the preceding unit and also splits at blank-line paragraph breaks. It retains unfinished text, emits no empty or whitespace-only units, excludes inter-unit sentence whitespace and paragraph separators, and otherwise preserves every character inside each unit range without trimming. It is deliberately language-agnostic and does not attempt abbreviation, decimal, or NLP-aware sentence detection.
 
-This is an available parallel capability:
+The cursor-local Obsidian path is:
 
 ```text
-TextContext → ContextSelection → WritingUnitSegmenter → WritingUnit[]
+TextContext
+  → ContextSelection
+  → WritingUnitSegmenter
+  → UnitAnalysisManager
+  → IncrementalUnitAnalysisCoordinator
+  → AnalysisCoordinator (one isolated WritingSegment per unit)
+  → provider
 ```
 
-The active analysis path remains unchanged:
+`IncrementalUnitAnalysisCoordinator` is application-layer orchestration above the existing single-segment `AnalysisCoordinator`; it does not call a provider directly. It keeps a small in-memory record binding each current `WritingUnit`, its isolated `WritingSegment`, exact analysis context, and lifecycle state. Synchronization and currentness evaluation are separate from scheduling. Incremental v1 schedules only the cursor-active unit when that unit is idle, stale, or failed; it does not fan out work to non-active siblings. One unit failure marks only that unit failed and preserves sibling state.
+
+Non-empty explicit selections retain higher semantic priority and remain one whole-selection analysis target in v1:
 
 ```text
-ContextSelection → WritingSegment → Analysis
+TextContext → ContextSelection → WritingSegment → AnalysisCoordinator → provider
 ```
 
-Writing units do not yet alter snapshots, processors, provider requests, debouncing, or presentation.
+The transitional side panel presents only the cursor-associated current unit for cursor-local analysis. Existing debounce timing is unchanged, and unfinished final units remain analyzable when that debounce fires. Explicit multi-sentence selections are not split into independent analysis or replacement targets.
 
 `WritingUnit`, `UnitAnalysisState`, and tracks have intentionally separate responsibilities:
 
 - a `WritingUnit` is an addressable source region within one selection analysis;
-- a `UnitAnalysisState` is an immutable application-layer snapshot of that unit's analysis lifecycle, source revision, explicit unit-source fingerprint when analyzed, and optional opaque result; and
+- a `UnitAnalysisState` is an immutable application-layer snapshot of that unit's analysis lifecycle, source revision, explicit unit-source fingerprint when analyzed, and optional provider-neutral `UnitAnalysisResult`; and
 - a derived track is generated content with domain provenance and dependency information.
+
+`UnitAnalysisResult` contains native-intent text, ordered normalized text variants, and the producing `DependencyStamp`. It contains no provider response, SDK object, profile, secret, host object, or UI state.
 
 The unit-source fingerprint is a deterministic, non-cryptographic change detector over the exact unit text and its UTF-16 source-range start and end. It answers only whether unit analysis is associated with the same source; it contains no provider, model, policy, native-intent, or UI dependency and is deliberately separate from `DependencyStamp`.
 
-`UnitAnalysisManager` synchronizes lifecycle states by both ephemeral unit ID and unit-source fingerprint. The same ID with the same text and range preserves its immutable state. New units and units whose text or relevant range changed receive fresh idle state with revision `0`, no analyzed-source fingerprint, and no result; old results are discarded rather than retained as stale because v1 has no consumer for them. Removed units are discarded and duplicate IDs are rejected atomically. Individual immutable replacements are accepted only for a known ID and the currently synchronized source. The manager remains scoped to one selection analysis and performs no persistent identity or cross-edit matching.
+`UnitAnalysisManager` synchronizes lifecycle states by both ephemeral unit ID and unit-source fingerprint. The same ID with the same text and range preserves its immutable state. New units and units whose text or relevant range changed receive fresh idle state with revision `0`, no analyzed-source fingerprint, and no result. Removed units are discarded and duplicate IDs are rejected atomically. Individual immutable replacements are accepted only for a known ID and the currently synchronized source. The manager remains scoped to one active context and performs no persistent identity or semantic matching across edits.
 
-This state boundary remains an available capability only:
+Current unit output requires two independent checks:
 
-```text
-ContextSelection → WritingUnit[] → UnitAnalysisState
-```
+1. the state's unit-source fingerprint must match the current unit text and relative UTF-16 range; and
+2. the result's complete producing `DependencyStamp` must match the effective stamp that would be used now, including source revision, confirmed intent when applicable, assistance policy, style profile, language, processor/provider configuration, source location, and exact effective surrounding context.
 
-It is not connected to `AnalysisCoordinator`, and it does not change current segment-level analysis or track generation.
+Source invalidation and dependency invalidation are intentionally different. If a unit's own source fingerprint changes, its older result is discarded and the unit resets to idle for the new source. If the source is unchanged but the exact context or another dependency changes, the older result is retained internally in `stale` state but is neither current nor presentable. A stale unit is not automatically scheduled: only the active target is eagerly refreshed under the existing debounce, while stale siblings remain dormant until they become active. The same lazy rule applies to profile and configuration changes, balancing semantic correctness, latency, and API cost.
+
+When a stale unit becomes active, it transitions through analyzing to completed and replaces the stored result and producing stamp. Cancellation stops obsolete active work where possible, while the final unit-source fingerprint and full `DependencyStamp` comparison remain authoritative against late completion. Punctuation-triggered scheduling, background stale-unit refresh, and concurrent unit requests remain deferred.
+
+Per-unit semantic context is constructed from outer `ContextSelection` context plus earlier and later text in the same active block. Only `unit.text` becomes `sourceText`; surrounding text remains read-only and the unit is not duplicated into it. Unit ranges remain relative to `ContextSelection.activeText`; adding `ContextSelection.sourceRange.start` maps them to host-source offsets.
+
+Each unit's confirmed native intent remains isolated in that unit's `WritingSegment`. Its existing source-revision semantics invalidate the confirmation when that unit source changes; intent is never shared across unit segments. Explicit-selection fallback retains the existing whole-selection behavior.
+
+Persistent unit identity, diff-based relocation, semantic matching, punctuation-triggered analysis, dynamic debounce, concurrency fan-out, streaming, multi-unit history UI, and replacement behavior remain deferred.
 
 ## State ownership
 
