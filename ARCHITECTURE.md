@@ -124,6 +124,22 @@ ContextSelection → WritingSegment → Analysis
 
 Writing units do not yet alter snapshots, processors, provider requests, debouncing, or presentation.
 
+`WritingUnit`, `UnitAnalysisState`, and tracks have intentionally separate responsibilities:
+
+- a `WritingUnit` is an addressable source region within one selection analysis;
+- a `UnitAnalysisState` is an immutable application-layer snapshot of that unit's analysis lifecycle, source revision, and optional opaque result; and
+- a derived track is generated content with domain provenance and dependency information.
+
+`UnitAnalysisManager` synchronizes lifecycle states by ephemeral unit ID: new units receive idle state, existing states are preserved, and removed units are discarded. Duplicate IDs are rejected. An idle state begins with source revision `0`, meaning that no analyzed source revision has been associated yet. The manager is scoped to one selection analysis and performs no persistent identity or cross-edit matching.
+
+This state boundary remains an available capability only:
+
+```text
+ContextSelection → WritingUnit[] → UnitAnalysisState
+```
+
+It is not connected to `AnalysisCoordinator`, and it does not change current segment-level analysis or track generation.
+
 ## State ownership
 
 Domain content consists of source tracks, derived tracks, provenance, revisions, and dependency information. These concepts express what was written or derived and the inputs on which derived content depends.
