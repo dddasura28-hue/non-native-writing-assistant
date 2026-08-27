@@ -10,6 +10,7 @@ import {
   type TextRange,
 } from "@non-native-writing/application";
 import {
+  NATIVE_INTENT_TRACK_TYPE_ID,
   NORMALIZED_TRACK_TYPE_ID,
   asTrackId,
 } from "@non-native-writing/core";
@@ -165,6 +166,44 @@ function resolveNormalized(
       ]),
     }),
   );
+}
+
+function resolveAssistance(
+  request: PendingRequest,
+  nativeIntent: string,
+  normalized: string,
+  id: string,
+): void {
+  request.resolve(
+    Object.freeze({
+      outputs: Object.freeze([
+        Object.freeze({
+          id: asTrackId(`${id}-intent`),
+          typeId: NATIVE_INTENT_TRACK_TYPE_ID,
+          text: nativeIntent,
+          provenance: "model" as const,
+          dependencyStamp: request.snapshot.dependencyStamp,
+        }),
+        Object.freeze({
+          id: asTrackId(`${id}-normalized`),
+          typeId: NORMALIZED_TRACK_TYPE_ID,
+          text: normalized,
+          provenance: "model" as const,
+          dependencyStamp: request.snapshot.dependencyStamp,
+        }),
+      ]),
+    }),
+  );
+}
+
+async function resolveAssistanceAndFlush(
+  request: PendingRequest,
+  nativeIntent: string,
+  normalized: string,
+  id: string,
+): Promise<void> {
+  resolveAssistance(request, nativeIntent, normalized, id);
+  await flushMicrotasks();
 }
 
 async function resolveNormalizedAndFlush(
@@ -801,14 +840,26 @@ describe("WritingAssistantController incremental unit analysis", () => {
     await flushMicrotasks();
     expect(provider.requests).toHaveLength(1);
 
-    await resolveNormalizedAndFlush(
+    await resolveAssistanceAndFlush(
       sentenceTwoRequest,
+      "第二句。",
       "Two normalized.",
       "cursor-two",
     );
     await expect(analysis).resolves.toMatchObject({ status: "applied" });
     expect(presenter.latest.sourceText).toBe("Three.");
     expect(presenter.latest.normalizedTracks).toEqual([]);
+    expect(presenter.latest.recentAssistance).toEqual([
+      expect.objectContaining({
+        sourceText: "Two.",
+        nativeIntentTracks: [
+          expect.objectContaining({ text: "第二句。" }),
+        ],
+        normalizedTracks: [
+          expect.objectContaining({ text: "Two normalized." }),
+        ],
+      }),
+    ]);
 
     expect(provider.requests[1]?.snapshot.sourceText).toBe("Three.");
     await resolveNormalizedAndFlush(
@@ -819,6 +870,9 @@ describe("WritingAssistantController incremental unit analysis", () => {
     expect(presenter.latest.sourceText).toBe("Three.");
     expect(presenter.latest.normalizedTracks).toEqual([
       expect.objectContaining({ text: "Three normalized." }),
+    ]);
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "Two.",
     ]);
 
     controller.scheduleAutomaticAnalysis(
@@ -832,6 +886,141 @@ describe("WritingAssistantController incremental unit analysis", () => {
     expect(presenter.latest.normalizedTracks).toEqual([
       expect.objectContaining({ text: "Two normalized." }),
     ]);
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "Three.",
+    ]);
+    expect(presenter.latest.recentAssistance).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceText: presenter.latest.sourceText }),
+      ]),
+    );
+    controller.dispose();
+  });
+
+  it("removes edited recent assistance instead of retaining old wording", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const original = "One. Two.";
+    const first = controller.analyze(
+      source("edit-recent.md", original, { cursorOffset: 1 }),
+    );
+    await flushMicrotasks();
+    await resolveAssistanceAndFlush(
+      provider.requests[0]!,
+      "第一句。",
+      "One normalized.",
+      "edit-recent-one",
+    );
+    await first;
+
+    controller.scheduleAutomaticAnalysis(
+      source("edit-recent.md", original, {
+        cursorOffset: original.indexOf("Two"),
+      }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "One.",
+    ]);
+
+    const edited = "Changed one! Two.";
+    controller.scheduleAutomaticAnalysis(
+      source("edit-recent.md", edited, {
+        cursorOffset: edited.indexOf("Two"),
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("Two.");
+    expect(presenter.latest.recentAssistance).toEqual([]);
+    controller.dispose();
+  });
+
+  it("hides cursor-unit Recent Assistance for an explicit selection", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "One. Two.";
+    const first = controller.analyze(
+      source("selection-recent.md", text, { cursorOffset: 1 }),
+    );
+    await flushMicrotasks();
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "One normalized.",
+      "selection-recent-one",
+    );
+    await first;
+
+    controller.scheduleAutomaticAnalysis(
+      source("selection-recent.md", text, {
+        cursorOffset: text.indexOf("Two"),
+      }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.recentAssistance).toHaveLength(1);
+
+    const start = text.indexOf("Two");
+    controller.scheduleAutomaticAnalysis(
+      source("selection-recent.md", text, {
+        cursorOffset: start,
+        selection: { start, end: text.length },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("Two.");
+    expect(presenter.latest.recentAssistance).toEqual([]);
+    controller.dispose();
+  });
+
+  it("does not carry assistance into a blank separator", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const text = "One.\n\nTwo.";
+    const first = controller.analyze(
+      source("blank-recent.md", text, { cursorOffset: 1 }),
+    );
+    await flushMicrotasks();
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "One normalized.",
+      "blank-recent-one",
+    );
+    await first;
+
+    controller.scheduleAutomaticAnalysis(
+      source("blank-recent.md", text, { cursorOffset: 5 }),
+    );
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("");
+    expect(presenter.latest.recentAssistance).toEqual([]);
+    controller.dispose();
+  });
+
+  it("does not leak Recent Assistance across documents", async () => {
+    const { controller, presenter, provider } = createHarness();
+    const firstDocument = "One. Two.";
+    const first = controller.analyze(
+      source("recent-a.md", firstDocument, { cursorOffset: 1 }),
+    );
+    await flushMicrotasks();
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "One normalized.",
+      "document-recent-one",
+    );
+    await first;
+    controller.scheduleAutomaticAnalysis(
+      source("recent-a.md", firstDocument, {
+        cursorOffset: firstDocument.indexOf("Two"),
+      }),
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.recentAssistance).toHaveLength(1);
+
+    controller.scheduleAutomaticAnalysis(source("recent-b.md", "Other draft"));
+    await flushMicrotasks();
+
+    expect(presenter.latest.sourceText).toBe("Other draft");
+    expect(presenter.latest.recentAssistance).toEqual([]);
     controller.dispose();
   });
 
@@ -901,6 +1090,9 @@ describe("WritingAssistantController incremental unit analysis", () => {
     ]);
     expect(presenter.latest.sourceText).toBe("C.");
     expect(presenter.latest.normalizedTracks).toEqual([]);
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "A.",
+    ]);
 
     await resolveNormalizedAndFlush(
       provider.requests[1]!,
@@ -912,6 +1104,10 @@ describe("WritingAssistantController incremental unit analysis", () => {
       "B.",
       "C.",
     ]);
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "B.",
+      "A.",
+    ]);
     await resolveNormalizedAndFlush(
       provider.requests[2]!,
       "C normalized.",
@@ -919,6 +1115,10 @@ describe("WritingAssistantController incremental unit analysis", () => {
     );
     expect(presenter.latest.normalizedTracks).toEqual([
       expect.objectContaining({ text: "C normalized." }),
+    ]);
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "B.",
+      "A.",
     ]);
     controller.dispose();
   });
@@ -1026,10 +1226,15 @@ describe("WritingAssistantController incremental unit analysis", () => {
       await initial;
     }
     expect(presenter.latest.sourceText).toBe("Three.");
+    expect(presenter.latest.recentAssistance.map((item) => item.sourceText)).toEqual([
+      "Two.",
+      "One.",
+    ]);
 
     configuration.switchProvider();
     await flushMicrotasks();
     expect(presenter.latest.normalizedTracks).toEqual([]);
+    expect(presenter.latest.recentAssistance).toEqual([]);
     expect(provider.requests).toHaveLength(3);
     await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
     await flushMicrotasks();
@@ -1044,6 +1249,7 @@ describe("WritingAssistantController incremental unit analysis", () => {
       "provider-two-output-three",
     );
     expect(presenter.latest.normalizedTracks[0]?.text).toBe("Provider two three.");
+    expect(presenter.latest.recentAssistance).toEqual([]);
 
     controller.scheduleAutomaticAnalysis(
       source("profile-switch.md", text, { cursorOffset: text.indexOf("Two") }),

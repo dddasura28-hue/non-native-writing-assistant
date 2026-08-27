@@ -1,4 +1,8 @@
-import type { AnalysisOutcome } from "@non-native-writing/application";
+import type {
+  AnalysisOutcome,
+  UnitAssistancePresentationModel,
+  UnitAssistanceTrackPresentation,
+} from "@non-native-writing/application";
 import {
   NATIVE_INTENT_TRACK_TYPE_ID,
   NORMALIZED_TRACK_TYPE_ID,
@@ -18,27 +22,31 @@ export type AnalysisStatus =
   | "Configuration required"
   | "Failed";
 
-export interface TrackPresentation {
-  readonly id: TrackId;
-  readonly text: string;
-  readonly label?: string;
-  readonly order?: number;
-}
+export type TrackPresentation = UnitAssistanceTrackPresentation;
 
-export interface WritingAssistantViewModel {
+export interface UnitAssistanceViewModel {
+  readonly unitId: string | null;
   readonly status: AnalysisStatus;
   readonly statusDetail?: string;
   readonly sourceText: string;
   readonly nativeIntentTracks: readonly TrackPresentation[];
   readonly normalizedTracks: readonly TrackPresentation[];
+  readonly isActive: boolean;
+}
+
+export interface WritingAssistantViewModel extends UnitAssistanceViewModel {
+  readonly recentAssistance: readonly UnitAssistanceViewModel[];
 }
 
 export function createEmptyViewModel(): WritingAssistantViewModel {
   return Object.freeze({
+    unitId: null,
     status: "Idle" as const,
     sourceText: "",
     nativeIntentTracks: Object.freeze([]),
     normalizedTracks: Object.freeze([]),
+    isActive: true,
+    recentAssistance: Object.freeze([]),
   });
 }
 
@@ -96,6 +104,7 @@ export function createViewModel(
   const includedIds = new Set(includedTrackIds);
 
   return Object.freeze({
+    unitId: null,
     status,
     statusDetail,
     sourceText: segment.sourceText,
@@ -108,6 +117,45 @@ export function createViewModel(
       segment,
       NORMALIZED_TRACK_TYPE_ID,
       includedIds,
+    ),
+    isActive: true,
+    recentAssistance: Object.freeze([]),
+  });
+}
+
+export function createIncrementalViewModel(
+  presentation: UnitAssistancePresentationModel,
+  status: AnalysisStatus,
+  statusDetail?: string,
+): WritingAssistantViewModel {
+  if (presentation.active === null) {
+    return Object.freeze({
+      ...createEmptyViewModel(),
+      status,
+      statusDetail,
+    });
+  }
+
+  const active = presentation.active;
+  return Object.freeze({
+    unitId: active.unitId,
+    status,
+    statusDetail,
+    sourceText: active.sourceText,
+    nativeIntentTracks: active.nativeIntentTracks,
+    normalizedTracks: active.normalizedTracks,
+    isActive: true,
+    recentAssistance: Object.freeze(
+      presentation.recent.map((item) =>
+        Object.freeze({
+          unitId: item.unitId,
+          status: "Applied" as const,
+          sourceText: item.sourceText,
+          nativeIntentTracks: item.nativeIntentTracks,
+          normalizedTracks: item.normalizedTracks,
+          isActive: false,
+        }),
+      ),
     ),
   });
 }

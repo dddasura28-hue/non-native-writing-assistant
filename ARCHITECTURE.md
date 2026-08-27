@@ -143,7 +143,11 @@ Non-empty explicit selections retain higher semantic priority and remain one who
 TextContext → ContextSelection → WritingSegment → AnalysisCoordinator → provider
 ```
 
-The transitional side panel presents only the cursor-associated current unit for cursor-local analysis. Existing debounce timing is unchanged for unfinished units, while completed units bypass that delay. The active presentation target is not necessarily the valid in-flight target: a just-completed previous unit may finish and enter its cache while the user is already typing the next unit, without repainting the next unit's panel. Explicit multi-sentence selections are not split into independent analysis or replacement targets.
+Runtime unit state and presentation state are separate. A completed unit may remain current in the runtime cache after it stops being the cursor-associated active target. The side panel derives a transient presentation snapshot containing one active unit plus at most three current completed non-active units from the same `ContextSelection`. The active unit is always primary and continues to define Source; a background completion never replaces it.
+
+Recent Assistance is ordered without timestamps: nearest previous units first, then nearest following units for backward cursor navigation. It is bounded presentation, not persistent document history, and ephemeral unit IDs are used only as transient render identities. Removed, failed, source-changed, or dependency-stale units are excluded even if their old results remain cached internally. Configuration changes do not trigger background refresh of stale siblings. Explicit selection keeps the existing whole-selection presentation and hides cursor-unit Recent Assistance; blank contexts and document/context switches likewise expose no prior-context entries.
+
+Existing debounce timing is unchanged for unfinished units, while completed units bypass that delay. The active presentation target is not necessarily the valid in-flight target: a just-completed previous unit may finish and enter its cache while the user is already typing the next unit, causing a presentation refresh without repainting the next unit's generated tracks. Explicit multi-sentence selections are not split into independent analysis or replacement targets.
 
 `WritingUnit`, `UnitAnalysisState`, and tracks have intentionally separate responsibilities:
 
@@ -170,7 +174,7 @@ Incremental per-unit semantic context is intentionally causal. `beforeContext` c
 
 Each unit's confirmed native intent remains isolated in that unit's `WritingSegment`. Its existing source-revision semantics invalidate the confirmation when that unit source changes; intent is never shared across unit segments. Explicit-selection fallback retains the existing whole-selection behavior.
 
-Persistent unit identity, diff-based relocation, semantic matching, adaptive debounce, phrase-level triggers, abbreviation-aware segmentation, concurrency fan-out, streaming, multi-unit history UI, and replacement behavior remain deferred.
+Persistent unit identity, diff-based relocation, semantic matching, adaptive debounce, phrase-level triggers, abbreviation-aware segmentation, concurrency fan-out, streaming, persistent unit history, inline editor assistance, source navigation, and replacement behavior remain deferred.
 
 ## State ownership
 

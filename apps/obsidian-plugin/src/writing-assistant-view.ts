@@ -3,6 +3,7 @@ import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 import {
   createEmptyViewModel,
   type TrackPresentation,
+  type UnitAssistanceViewModel,
   type WritingAssistantViewModel,
 } from "./presentation.js";
 import type { WritingAssistantPresenter } from "./writing-assistant-controller.js";
@@ -73,7 +74,11 @@ export class WritingAssistantView
       : this.#viewModel.status;
     root.createDiv({ cls: "nnwa-panel__status", text: statusText });
 
-    this.#renderSource(root);
+    root.createEl("h3", {
+      cls: "nnwa-panel__group-title",
+      text: "Current",
+    });
+    this.#renderSource(root, this.#viewModel);
     this.#renderTrackSection(
       root,
       "Native intent",
@@ -86,6 +91,7 @@ export class WritingAssistantView
       this.#viewModel.normalizedTracks,
       "No normalized expression available.",
     );
+    this.#renderRecentAssistance(root, this.#viewModel.recentAssistance);
   }
 
   #renderProfileSelector(root: HTMLElement): void {
@@ -139,7 +145,10 @@ export class WritingAssistantView
     });
   }
 
-  #renderSource(root: HTMLElement): void {
+  #renderSource(
+    root: HTMLElement,
+    item: UnitAssistanceViewModel,
+  ): void {
     const section = root.createDiv({ cls: "nnwa-panel__section" });
     section.createEl("h3", {
       cls: "nnwa-panel__section-title",
@@ -149,10 +158,70 @@ export class WritingAssistantView
     section.createDiv({
       cls: "nnwa-panel__track",
       text:
-        this.#viewModel.sourceText.length > 0
-          ? this.#viewModel.sourceText
+        item.sourceText.length > 0
+          ? item.sourceText
           : "The active document is empty.",
     });
+  }
+
+  #renderRecentAssistance(
+    root: HTMLElement,
+    items: readonly UnitAssistanceViewModel[],
+  ): void {
+    if (items.length === 0) {
+      return;
+    }
+
+    const section = root.createDiv({ cls: "nnwa-panel__recent" });
+    section.createEl("h3", {
+      cls: "nnwa-panel__group-title",
+      text: "Recent Assistance",
+    });
+
+    for (const item of items) {
+      const card = section.createDiv({ cls: "nnwa-panel__recent-item" });
+      if (item.unitId !== null) {
+        card.dataset.unitId = item.unitId;
+      }
+
+      this.#renderRecentField(card, "Source", [
+        Object.freeze({ text: item.sourceText }),
+      ]);
+      this.#renderRecentField(
+        card,
+        "Native intent",
+        item.nativeIntentTracks,
+      );
+      this.#renderRecentField(card, "Normalized", item.normalizedTracks);
+    }
+  }
+
+  #renderRecentField(
+    card: HTMLElement,
+    title: string,
+    tracks: readonly Pick<TrackPresentation, "text" | "label">[],
+  ): void {
+    const field = card.createDiv({ cls: "nnwa-panel__recent-field" });
+    field.createDiv({ cls: "nnwa-panel__recent-label", text: title });
+
+    if (tracks.length === 0) {
+      field.createDiv({
+        cls: "nnwa-panel__empty",
+        text: `No ${title.toLocaleLowerCase()} available.`,
+      });
+      return;
+    }
+
+    for (const track of tracks) {
+      const text = field.createDiv({ cls: "nnwa-panel__recent-text" });
+      if (track.label !== undefined) {
+        text.createDiv({
+          cls: "nnwa-panel__track-label",
+          text: track.label,
+        });
+      }
+      text.createDiv({ text: track.text });
+    }
   }
 
   #renderTrackSection(

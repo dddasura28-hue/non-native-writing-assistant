@@ -6,6 +6,7 @@ import {
   SimpleWritingUnitSegmenter,
   assertContextSelectionMapsToText,
   createAnalysisContext,
+  createUnitAssistancePresentationModel,
   createUnitSourceFingerprint,
   createWholeAvailableAnalysisContext,
   selectCurrentWritingUnit,
@@ -35,6 +36,7 @@ import {
   type AnalysisConfigurationSource,
 } from "./provider/analysis-configuration-source.js";
 import {
+  createIncrementalViewModel,
   createViewModel,
   statusForOutcome,
   type AnalysisStatus,
@@ -293,6 +295,17 @@ export class WritingAssistantController {
     const outcome = await outcomePromise;
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
+      if (
+        !this.#disposed &&
+        outcome.status === "applied" &&
+        this.#activeDocumentKey === state.documentKey &&
+        !state.explicitSelection
+      ) {
+        // A still-current background unit may have completed after the cursor
+        // advanced. Refresh the bounded recent-assistance snapshot without
+        // changing the active unit's status or source.
+        this.#queuePresentation(state);
+      }
       return outcome;
     }
 
@@ -604,15 +617,15 @@ export class WritingAssistantController {
 
   #viewModelFor(state: DocumentState): WritingAssistantViewModel {
     if (!state.explicitSelection && state.currentUnitId !== null) {
-      const record = state.unitAnalysis.getRecord(state.currentUnitId);
-      if (record !== null) {
-        return createViewModel(
-          record.segment,
+      const presentation = createUnitAssistancePresentationModel(
+        state.unitAnalysis,
+        state.currentUnitId,
+        state.configuration,
+      );
+      if (presentation.active !== null) {
+        return createIncrementalViewModel(
+          presentation,
           state.status,
-          state.unitAnalysis.getCurrentTrackIds(
-            state.currentUnitId,
-            state.configuration,
-          ),
           state.statusDetail,
         );
       }
