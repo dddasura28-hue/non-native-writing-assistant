@@ -399,10 +399,13 @@ describe("WritingAssistantController automatic analysis", () => {
     );
     await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
     await flushMicrotasks();
-    const secondRequest = provider.requests[1];
-    if (secondRequest === undefined) {
-      throw new Error("Second identical block analysis did not start.");
-    }
+    expect(provider.requests).toHaveLength(1);
+    expect(firstRequest.signal.aborted).toBe(true);
+
+    resolveNormalized(firstRequest, "Wrong location", "old-identical-block");
+    await expect(firstAnalysis).resolves.toEqual({ status: "stale" });
+    await flushMicrotasks();
+    const secondRequest = provider.requests[1]!;
 
     expect(secondRequest.snapshot.segmentId).toBe(firstRequest.snapshot.segmentId);
     expect(secondRequest.snapshot.dependencyStamp.contextFingerprint).not.toBe(
@@ -410,8 +413,6 @@ describe("WritingAssistantController automatic analysis", () => {
     );
     expect(secondRequest.snapshot.sourceText).toBe("Same text");
 
-    resolveNormalized(firstRequest, "Wrong location", "old-identical-block");
-    await expect(firstAnalysis).resolves.toEqual({ status: "stale" });
     expect(presenter.latest.normalizedTracks).toEqual([]);
 
     resolveApplied(secondRequest);
@@ -499,6 +500,38 @@ describe("WritingAssistantController automatic analysis", () => {
 
     expect(provider.requests).toHaveLength(0);
     expect(presenter.latest).toMatchObject({ sourceText: "", status: "Idle" });
+    controller.dispose();
+  });
+
+  it("does not automatically analyze uncommitted IME composition", async () => {
+    const { controller, provider } = createHarness();
+    const text = "Composing.";
+
+    controller.scheduleAutomaticAnalysis(
+      source("composition.md", text, {
+        composition: { start: 0, end: text.length, text },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS * 2);
+    await flushMicrotasks();
+
+    expect(provider.requests).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it("does not apply cursor-local automatic triggers to explicit selections", async () => {
+    const { controller, provider } = createHarness();
+    const text = "Selected sentence.";
+
+    controller.scheduleAutomaticAnalysis(
+      source("automatic-selection.md", text, {
+        selection: { start: 0, end: text.length },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS * 2);
+    await flushMicrotasks();
+
+    expect(provider.requests).toHaveLength(0);
     controller.dispose();
   });
 
@@ -657,7 +690,7 @@ describe("WritingAssistantController incremental unit analysis", () => {
     controller.dispose();
   });
 
-  it("debounces the active edit and lazily refreshes a stale sibling on navigation", async () => {
+  it("immediately analyzes a completed edit without invalidating earlier causal siblings", async () => {
     const { controller, presenter, provider } = createHarness();
     const original = "A. B. C.";
     const cursors = [
@@ -689,10 +722,6 @@ describe("WritingAssistantController incremental unit analysis", () => {
     await flushMicrotasks();
     expect(presenter.latest.sourceText).toBe("Changed C!");
     expect(presenter.latest.normalizedTracks).toEqual([]);
-    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS - 1);
-    expect(provider.requests).toHaveLength(3);
-    await vi.advanceTimersByTimeAsync(1);
-    await flushMicrotasks();
     expect(provider.requests).toHaveLength(4);
     expect(provider.requests[3]?.snapshot.sourceText).toBe("Changed C!");
     await resolveNormalizedAndFlush(
@@ -708,21 +737,10 @@ describe("WritingAssistantController incremental unit analysis", () => {
     );
     await flushMicrotasks();
     expect(presenter.latest.sourceText).toBe("B.");
-    expect(presenter.latest.normalizedTracks).toEqual([]);
-    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS - 1);
-    expect(provider.requests).toHaveLength(4);
-    await vi.advanceTimersByTimeAsync(1);
-    await flushMicrotasks();
-    expect(provider.requests).toHaveLength(5);
-    expect(provider.requests[4]?.snapshot.sourceText).toBe("B.");
-    await resolveNormalizedAndFlush(
-      provider.requests[4]!,
-      "Refreshed B.",
-      "lazy-refreshed-b",
-    );
     expect(presenter.latest.normalizedTracks).toEqual([
-      expect.objectContaining({ text: "Refreshed B." }),
+      expect.objectContaining({ text: "Initial 1." }),
     ]);
+    expect(provider.requests).toHaveLength(4);
     controller.dispose();
   });
 
@@ -758,7 +776,7 @@ describe("WritingAssistantController incremental unit analysis", () => {
     controller.dispose();
   });
 
-  it("cancels an old active unit and never lets its late result repaint a new target", async () => {
+  it("keeps a valid previous-unit request, caches it, and never repaints the new target", async () => {
     const { controller, presenter, provider } = createHarness();
     const text = "One. Two. Three.";
     const analysis = controller.analyze(
@@ -776,20 +794,22 @@ describe("WritingAssistantController incremental unit analysis", () => {
       }),
     );
     await flushMicrotasks();
-    expect(sentenceTwoRequest.signal.aborted).toBe(true);
+    expect(sentenceTwoRequest.signal.aborted).toBe(false);
     expect(presenter.latest.sourceText).toBe("Three.");
 
-    resolveNormalized(
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(1);
+
+    await resolveNormalizedAndFlush(
       sentenceTwoRequest,
       "Two normalized.",
       "cursor-two",
     );
-    await expect(analysis).resolves.toEqual({ status: "aborted" });
+    await expect(analysis).resolves.toMatchObject({ status: "applied" });
     expect(presenter.latest.sourceText).toBe("Three.");
     expect(presenter.latest.normalizedTracks).toEqual([]);
 
-    await vi.advanceTimersByTimeAsync(DEFAULT_ANALYSIS_DEBOUNCE_MS);
-    await flushMicrotasks();
     expect(provider.requests[1]?.snapshot.sourceText).toBe("Three.");
     await resolveNormalizedAndFlush(
       provider.requests[1]!,
@@ -799,6 +819,106 @@ describe("WritingAssistantController incremental unit analysis", () => {
     expect(presenter.latest.sourceText).toBe("Three.");
     expect(presenter.latest.normalizedTracks).toEqual([
       expect.objectContaining({ text: "Three normalized." }),
+    ]);
+
+    controller.scheduleAutomaticAnalysis(
+      source("cursor-move.md", text, {
+        cursorOffset: text.indexOf("Two") + 1,
+      }),
+    );
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(2);
+    expect(presenter.latest.sourceText).toBe("Two.");
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "Two normalized." }),
+    ]);
+    controller.dispose();
+  });
+
+  it("starts a completed sentence immediately and deduplicates repeated or whitespace events", async () => {
+    const { controller, provider } = createHarness();
+
+    controller.scheduleAutomaticAnalysis(source("completion.md", "I agree."));
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]?.snapshot.sourceText).toBe("I agree.");
+
+    controller.scheduleAutomaticAnalysis(source("completion.md", "I agree."));
+    controller.scheduleAutomaticAnalysis(source("completion.md", "I agree. "));
+    await flushMicrotasks();
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]?.signal.aborted).toBe(false);
+
+    resolveApplied(provider.requests[0]!);
+    await flushMicrotasks();
+    controller.dispose();
+  });
+
+  it("rejects an immediate result after terminal punctuation is deleted", async () => {
+    const { controller, presenter, provider } = createHarness();
+
+    controller.scheduleAutomaticAnalysis(source("delete-terminal.md", "Wrong."));
+    await flushMicrotasks();
+    const completedRequest = provider.requests[0]!;
+
+    controller.scheduleAutomaticAnalysis(source("delete-terminal.md", "Wrong"));
+    await flushMicrotasks();
+    expect(completedRequest.signal.aborted).toBe(true);
+    expect(presenter.latest.sourceText).toBe("Wrong");
+
+    resolveNormalized(
+      completedRequest,
+      "Must not be cached.",
+      "deleted-terminal-output",
+    );
+    await flushMicrotasks();
+    expect(presenter.latest.sourceText).toBe("Wrong");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+    controller.dispose();
+  });
+
+  it("coalesces rapid completed sentences into sequential provider requests", async () => {
+    const { controller, presenter, provider } = createHarness();
+
+    controller.scheduleAutomaticAnalysis(source("rapid.md", "A."));
+    controller.scheduleAutomaticAnalysis(source("rapid.md", "A. B."));
+    controller.scheduleAutomaticAnalysis(source("rapid.md", "A. B. C."));
+    await flushMicrotasks();
+
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+    ]);
+    expect(presenter.latest.sourceText).toBe("C.");
+
+    await resolveNormalizedAndFlush(
+      provider.requests[0]!,
+      "A normalized.",
+      "rapid-a-output",
+    );
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+      "B.",
+    ]);
+    expect(presenter.latest.sourceText).toBe("C.");
+    expect(presenter.latest.normalizedTracks).toEqual([]);
+
+    await resolveNormalizedAndFlush(
+      provider.requests[1]!,
+      "B normalized.",
+      "rapid-b-output",
+    );
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+      "B.",
+      "C.",
+    ]);
+    await resolveNormalizedAndFlush(
+      provider.requests[2]!,
+      "C normalized.",
+      "rapid-c-output",
+    );
+    expect(presenter.latest.normalizedTracks).toEqual([
+      expect.objectContaining({ text: "C normalized." }),
     ]);
     controller.dispose();
   });

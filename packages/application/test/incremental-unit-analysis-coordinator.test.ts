@@ -193,7 +193,7 @@ describe("IncrementalUnitAnalysisCoordinator", () => {
     });
   });
 
-  it("uses exact sibling context, leaves stale siblings dormant, and analyzes only the active edit", async () => {
+  it("preserves earlier causal siblings and analyzes only the active future edit", async () => {
     const { coordinator, provider, units } = harness("A. B. C.");
     await completeAllUnits(coordinator, provider, units.map((unit) => unit.id));
 
@@ -201,10 +201,8 @@ describe("IncrementalUnitAnalysisCoordinator", () => {
     const editedUnits = segmenter.segment(edited.activeText);
     coordinator.synchronize(edited, editedUnits);
 
-    // V1 supplies C in both A and B's exact afterContext, so both unchanged
-    // siblings are dependency-stale, but synchronization schedules nothing.
-    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("stale");
-    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("stale");
+    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("completed");
+    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("completed");
     expect(coordinator.getRecord("writing-unit:2")?.state.status).toBe("idle");
     expect(provider.requests).toHaveLength(3);
 
@@ -214,18 +212,28 @@ describe("IncrementalUnitAnalysisCoordinator", () => {
     await resolveRequest(provider, 3, "changed-c");
     await expect(activeOutcome).resolves.toMatchObject({ status: "applied" });
 
-    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("stale");
-    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("stale");
+    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("completed");
+    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("completed");
     expect(coordinator.getRecord("writing-unit:2")?.state.status).toBe("completed");
     expect(provider.requests).toHaveLength(4);
 
-    const siblingOutcome = coordinator.analyze("writing-unit:1", configuration());
-    expect(provider.requests).toHaveLength(5);
-    expect(provider.request(4).snapshot.sourceText).toBe("B.");
-    await resolveRequest(provider, 4, "refreshed-b");
-    await siblingOutcome;
-    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("completed");
-    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("stale");
+    await expect(
+      coordinator.analyze("writing-unit:1", configuration()),
+    ).resolves.toEqual({ status: "applied", appliedTrackIds: [] });
+    expect(provider.requests).toHaveLength(4);
+  });
+
+  it("invalidates later units when their causal beforeContext changes", async () => {
+    const { coordinator, provider, units } = harness("A. B. C.");
+    await completeAllUnits(coordinator, provider, units.map((unit) => unit.id));
+
+    const edited = selection("X. B. C.");
+    coordinator.synchronize(edited, segmenter.segment(edited.activeText));
+
+    expect(coordinator.getRecord("writing-unit:0")?.state.status).toBe("idle");
+    expect(coordinator.getRecord("writing-unit:1")?.state.status).toBe("stale");
+    expect(coordinator.getRecord("writing-unit:2")?.state.status).toBe("stale");
+    expect(provider.requests).toHaveLength(3);
   });
 
   it("retains hidden stale data while reanalyzing and replaces its DependencyStamp", async () => {
@@ -311,6 +319,127 @@ describe("IncrementalUnitAnalysisCoordinator", () => {
     expect(coordinator.getCurrentResult(units[0]!.id, configuration())).toBeNull();
   });
 
+  it("keeps a valid completed-unit request running while queuing the next unit", async () => {
+    const { coordinator, provider, units } = harness("A.");
+    const first = coordinator.analyze(
+      units[0]!.id,
+      configuration(),
+      "completion",
+    );
+
+    const expanded = selection("A. B.");
+    const expandedUnits = segmenter.segment(expanded.activeText);
+    coordinator.synchronize(expanded, expandedUnits);
+    const second = coordinator.analyze(
+      expandedUnits[1]!.id,
+      configuration(),
+      "completion",
+    );
+
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.request(0).signal.aborted).toBe(false);
+    await resolveRequest(provider, 0, "a");
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.request(1).snapshot.sourceText).toBe("B.");
+    await resolveRequest(provider, 1, "b");
+
+    await expect(first).resolves.toMatchObject({ status: "applied" });
+    await expect(second).resolves.toMatchObject({ status: "applied" });
+    expect(coordinator.getRecord(expandedUnits[0]!.id)?.state.status).toBe(
+      "completed",
+    );
+  });
+
+  it("processes rapid completed units sequentially without provider fan-out", async () => {
+    const { coordinator, provider, units } = harness("A.");
+    const first = coordinator.analyze(
+      units[0]!.id,
+      configuration(),
+      "completion",
+    );
+
+    const two = selection("A. B.");
+    const twoUnits = segmenter.segment(two.activeText);
+    coordinator.synchronize(two, twoUnits);
+    const second = coordinator.analyze(
+      twoUnits[1]!.id,
+      configuration(),
+      "completion",
+    );
+
+    const three = selection("A. B. C.");
+    const threeUnits = segmenter.segment(three.activeText);
+    coordinator.synchronize(three, threeUnits);
+    const third = coordinator.analyze(
+      threeUnits[2]!.id,
+      configuration(),
+      "completion",
+    );
+
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+    ]);
+    await resolveRequest(provider, 0, "rapid-a");
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+      "B.",
+    ]);
+    await resolveRequest(provider, 1, "rapid-b");
+    expect(provider.requests.map((request) => request.snapshot.sourceText)).toEqual([
+      "A.",
+      "B.",
+      "C.",
+    ]);
+    await resolveRequest(provider, 2, "rapid-c");
+
+    await Promise.all([first, second, third]);
+  });
+
+  it("drops a queued unit whose source becomes obsolete", async () => {
+    const { coordinator, provider, units } = harness("A.");
+    const first = coordinator.analyze(
+      units[0]!.id,
+      configuration(),
+      "completion",
+    );
+    const expanded = selection("A. B.");
+    const expandedUnits = segmenter.segment(expanded.activeText);
+    coordinator.synchronize(expanded, expandedUnits);
+    const obsolete = coordinator.analyze(
+      expandedUnits[1]!.id,
+      configuration(),
+      "completion",
+    );
+
+    const edited = selection("A. Changed B.");
+    coordinator.synchronize(edited, segmenter.segment(edited.activeText));
+    await expect(obsolete).resolves.toEqual({ status: "stale" });
+
+    await resolveRequest(provider, 0, "only-a");
+    await first;
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it("deduplicates equivalent completion requests", async () => {
+    const { coordinator, provider, units } = harness("Done.");
+    const first = coordinator.analyze(
+      units[0]!.id,
+      configuration(),
+      "completion",
+    );
+    const duplicate = coordinator.analyze(
+      units[0]!.id,
+      configuration(),
+      "completion",
+    );
+
+    expect(provider.requests).toHaveLength(1);
+    await resolveRequest(provider, 0, "deduplicated");
+    await expect(first).resolves.toMatchObject({ status: "applied" });
+    await expect(duplicate).resolves.toMatchObject({ status: "applied" });
+    expect(provider.requests).toHaveLength(1);
+  });
+
   it("keeps sibling states isolated when the active unit fails", async () => {
     const { coordinator, provider, units } = harness("One. Two. Three.");
     await completeUnit(coordinator, provider, units[0]!.id, "one");
@@ -350,19 +479,32 @@ describe("WritingUnit context and target helpers", () => {
   });
   const units = segmenter.segment(contextSelection.activeText);
 
-  it("builds exact ordered before/after context without duplicating unit text", () => {
+  it("builds causal same-block beforeContext and retains outer afterContext", () => {
     const second = units[1]!;
     const context = createWritingUnitAnalysisContext(contextSelection, second);
 
     expect(context.beforeContext).toBe("Outer before\n\nFirst. ");
-    expect(context.afterContext).toBe(" Third.\n\nOuter after");
+    expect(context.afterContext).toBe("Outer after");
     expect(context.beforeContext).not.toContain(second.text);
     expect(context.afterContext).not.toContain(second.text);
   });
 
-  it("changes exact per-unit context fingerprints when same-block context changes", () => {
+  it("does not change an earlier fingerprint for later same-block edits", () => {
     const initial = selection("A. B. C.");
     const edited = selection("A. B. Changed C!");
+    const initialUnits = segmenter.segment(initial.activeText);
+    const editedUnits = segmenter.segment(edited.activeText);
+
+    expect(
+      createWritingUnitAnalysisContext(initial, initialUnits[1]!).contextFingerprint,
+    ).toBe(
+      createWritingUnitAnalysisContext(edited, editedUnits[1]!).contextFingerprint,
+    );
+  });
+
+  it("changes a later fingerprint when earlier same-block context changes", () => {
+    const initial = selection("A. B. C.");
+    const edited = selection("X. B. C.");
     const initialUnits = segmenter.segment(initial.activeText);
     const editedUnits = segmenter.segment(edited.activeText);
 

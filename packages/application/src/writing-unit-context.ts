@@ -24,13 +24,14 @@ export function createWritingUnitAnalysisContext(
   unit: WritingUnit,
 ): AnalysisContext {
   const beforeInBlock = selection.activeText.slice(0, unit.range.start);
-  const afterInBlock = selection.activeText.slice(unit.range.end);
 
   return createAnalysisContext({
     activeText: unit.text,
     sourceRange: mapWritingUnitToSourceRange(selection, unit),
     beforeContext: joinContext(selection.beforeContext, beforeInBlock),
-    afterContext: joinContext(afterInBlock, selection.afterContext),
+    // Incremental writing is causal: later same-block text must not
+    // invalidate an earlier unit that was already complete.
+    afterContext: selection.afterContext,
   });
 }
 

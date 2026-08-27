@@ -9,6 +9,7 @@ export * from "./text-context.js";
 export * from "./unit-analysis-manager.js";
 export * from "./unit-analysis-result.js";
 export * from "./unit-analysis-state.js";
+export * from "./unit-analysis-trigger-policy.js";
 export * from "./unit-source-fingerprint.js";
 export * from "./writing-unit.js";
 export * from "./writing-unit-context.js";

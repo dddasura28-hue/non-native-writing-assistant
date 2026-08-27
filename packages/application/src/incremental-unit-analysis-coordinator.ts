@@ -37,7 +37,10 @@ import {
   restoreUnitAnalysisCompleted,
   type UnitAnalysisState,
 } from "./unit-analysis-state.js";
-import { createUnitSourceFingerprint } from "./unit-source-fingerprint.js";
+import {
+  createUnitSourceFingerprint,
+  type UnitSourceFingerprint,
+} from "./unit-source-fingerprint.js";
 import type { WritingUnit } from "./writing-unit.js";
 import { createWritingUnitAnalysisContext } from "./writing-unit-context.js";
 
@@ -54,10 +57,28 @@ interface RuntimeUnitRecord {
   resultTrackIds: readonly TrackId[];
 }
 
-interface ActiveBatch {
-  readonly token: symbol;
+export const UNIT_ANALYSIS_REQUEST_KINDS = Object.freeze([
+  "debounced",
+  "completion",
+  "manual",
+] as const);
+
+export type UnitAnalysisRequestKind =
+  (typeof UNIT_ANALYSIS_REQUEST_KINDS)[number];
+
+interface QueuedUnitAnalysis {
   readonly unitId: string;
+  readonly sourceFingerprint: UnitSourceFingerprint;
+  readonly dependencyStamp: DependencyStamp;
+  readonly configuration: AnalysisConfiguration;
+  kind: UnitAnalysisRequestKind;
+  readonly promise: Promise<AnalysisOutcome>;
+  readonly resolve: (outcome: AnalysisOutcome) => void;
+}
+
+interface ActiveUnitAnalysis extends QueuedUnitAnalysis {
   readonly segmentId: SegmentId;
+  readonly analyzingState: UnitAnalysisState;
   supersededAs?: "stale" | "aborted";
 }
 
@@ -77,9 +98,11 @@ export class IncrementalUnitAnalysisCoordinator {
   readonly #coordinatorNumber = ++nextIncrementalCoordinatorNumber;
   #records = new Map<string, RuntimeUnitRecord>();
   #nextSegmentNumber = 0;
-  #synchronizationKey: string | undefined;
   #configuration: AnalysisConfiguration | undefined;
-  #activeBatch: ActiveBatch | undefined;
+  #activeAnalysis: ActiveUnitAnalysis | undefined;
+  #pendingManual: QueuedUnitAnalysis | undefined;
+  #pendingCompletions = new Map<string, QueuedUnitAnalysis>();
+  #pendingDebounced: QueuedUnitAnalysis | undefined;
 
   constructor(
     analysisCoordinator: AnalysisCoordinator,
@@ -94,15 +117,6 @@ export class IncrementalUnitAnalysisCoordinator {
     units: readonly WritingUnit[],
   ): void {
     assertUnitsMapToSelection(selection, units);
-
-    const synchronizationKey = createSynchronizationKey(selection, units);
-    const synchronizationChanged =
-      this.#synchronizationKey !== undefined &&
-      this.#synchronizationKey !== synchronizationKey;
-
-    if (synchronizationChanged) {
-      this.#supersedeActiveBatch("stale");
-    }
 
     const previousRecords = this.#records;
     this.#manager.synchronize(units);
@@ -151,22 +165,24 @@ export class IncrementalUnitAnalysisCoordinator {
     }
 
     this.#records = synchronized;
-    this.#synchronizationKey = synchronizationKey;
+    this.#discardObsoletePending();
+    this.#cancelActiveIfObsolete();
     this.#reconcileDependencyStates();
   }
 
   clear(): void {
-    this.#supersedeActiveBatch("stale");
+    this.#supersedeActiveAnalysis("stale");
+    this.#cancelPending("stale");
     for (const record of this.#records.values()) {
       this.#analysisCoordinator.cancelAnalysis(record.segment.id);
     }
     this.#manager.synchronize([]);
     this.#records = new Map();
-    this.#synchronizationKey = undefined;
   }
 
   cancel(): void {
-    this.#supersedeActiveBatch("aborted");
+    this.#supersedeActiveAnalysis("aborted");
+    this.#cancelPending("aborted");
   }
 
   updateConfiguration(configuration: AnalysisConfiguration): void {
@@ -181,7 +197,8 @@ export class IncrementalUnitAnalysisCoordinator {
       this.#analysisCoordinator.updateConfiguration(record.segment.id, copied);
     }
     if (changed) {
-      this.#supersedeActiveBatch("stale");
+      this.#supersedeActiveAnalysis("stale");
+      this.#cancelPending("stale");
     }
     this.#reconcileDependencyStates();
   }
@@ -234,9 +251,9 @@ export class IncrementalUnitAnalysisCoordinator {
   async analyze(
     activeUnitId: string,
     configuration: AnalysisConfiguration,
+    kind: UnitAnalysisRequestKind = "manual",
   ): Promise<AnalysisOutcome> {
     this.updateConfiguration(configuration);
-    this.#supersedeActiveBatch("aborted");
 
     const record = this.#records.get(activeUnitId);
     const state = this.#manager.getState(activeUnitId);
@@ -262,91 +279,272 @@ export class IncrementalUnitAnalysisCoordinator {
       });
     }
 
-    const analyzing = markUnitAnalysisAnalyzing(
-      record.unit,
-      record.segment.sourceTrack.revision,
-      state.result,
+    const equivalent = this.#findEquivalentAnalysis(
+      activeUnitId,
+      createUnitSourceFingerprint(record.unit),
+      snapshot.dependencyStamp,
     );
-    this.#manager.setState(record.unit.id, analyzing);
+    if (equivalent !== undefined) {
+      this.#promotePending(equivalent, kind);
+      return equivalent.promise;
+    }
 
-    const batch: ActiveBatch = {
-      token: Symbol("unit-analysis-batch"),
-      unitId: record.unit.id,
-      segmentId: record.segment.id,
-    };
-    this.#activeBatch = batch;
+    if (
+      kind !== "debounced" &&
+      this.#activeAnalysis?.kind === "debounced" &&
+      this.#activeAnalysis.supersededAs === undefined
+    ) {
+      this.#supersedeActiveAnalysis("aborted");
+    }
 
+    const queued = createQueuedUnitAnalysis(
+      record.unit,
+      snapshot.dependencyStamp,
+      configuration,
+      kind,
+    );
+    this.#enqueue(queued);
+    this.#drainQueue();
+    return queued.promise;
+  }
+
+  #enqueue(analysis: QueuedUnitAnalysis): void {
+    if (analysis.kind === "manual") {
+      this.#replacePending(this.#pendingManual, analysis, "aborted");
+      this.#pendingManual = analysis;
+      return;
+    }
+
+    if (analysis.kind === "completion") {
+      const existing = this.#pendingCompletions.get(analysis.unitId);
+      this.#replacePending(existing, analysis, "stale");
+      this.#pendingCompletions.set(analysis.unitId, analysis);
+      return;
+    }
+
+    this.#replacePending(this.#pendingDebounced, analysis, "aborted");
+    this.#pendingDebounced = analysis;
+  }
+
+  #replacePending(
+    existing: QueuedUnitAnalysis | undefined,
+    replacement: QueuedUnitAnalysis,
+    reason: "stale" | "aborted",
+  ): void {
+    if (existing !== undefined && existing !== replacement) {
+      this.#removePending(existing);
+      existing.resolve(outcomeForReason(reason));
+    }
+  }
+
+  #promotePending(
+    analysis: QueuedUnitAnalysis,
+    requestedKind: UnitAnalysisRequestKind,
+  ): void {
+    if (
+      analysis === this.#activeAnalysis ||
+      requestPriority(analysis.kind) >= requestPriority(requestedKind)
+    ) {
+      return;
+    }
+
+    this.#removePending(analysis);
+    analysis.kind = requestedKind;
+    this.#enqueue(analysis);
+  }
+
+  #findEquivalentAnalysis(
+    unitId: string,
+    sourceFingerprint: UnitSourceFingerprint,
+    dependencyStamp: DependencyStamp,
+  ): QueuedUnitAnalysis | undefined {
+    const active = this.#activeAnalysis;
+    return this.#allAnalyses().find(
+      (analysis) =>
+        analysis.unitId === unitId &&
+        analysis.sourceFingerprint === sourceFingerprint &&
+        dependencyStampMatches(
+          analysis.dependencyStamp,
+          dependencyStamp,
+        ) &&
+        (analysis !== active || active.supersededAs === undefined),
+    );
+  }
+
+  #allAnalyses(): QueuedUnitAnalysis[] {
+    const analyses: QueuedUnitAnalysis[] = [];
+    if (this.#activeAnalysis !== undefined) {
+      analyses.push(this.#activeAnalysis);
+    }
+    if (this.#pendingManual !== undefined) {
+      analyses.push(this.#pendingManual);
+    }
+    analyses.push(...this.#pendingCompletions.values());
+    if (this.#pendingDebounced !== undefined) {
+      analyses.push(this.#pendingDebounced);
+    }
+    return analyses;
+  }
+
+  #drainQueue(): void {
+    if (this.#activeAnalysis !== undefined) {
+      return;
+    }
+
+    while (true) {
+      const queued = this.#takeNextPending();
+      if (queued === undefined) {
+        return;
+      }
+      if (!this.#analysisStillCurrent(queued)) {
+        queued.resolve(STALE_OUTCOME);
+        continue;
+      }
+
+      const record = this.#records.get(queued.unitId)!;
+      const state = this.#manager.getState(queued.unitId)!;
+      const snapshot = captureAnalysisSnapshot(
+        record.segment,
+        queued.configuration,
+        record.analysisContext,
+      );
+      if (
+        isUnitAnalysisStateCurrent(
+          state,
+          record.unit,
+          snapshot.dependencyStamp,
+        )
+      ) {
+        queued.resolve(
+          Object.freeze({
+            status: "applied" as const,
+            appliedTrackIds: EMPTY_TRACK_IDS,
+          }),
+        );
+        continue;
+      }
+
+      const analyzing = markUnitAnalysisAnalyzing(
+        record.unit,
+        record.segment.sourceTrack.revision,
+        state.result,
+      );
+      this.#manager.setState(record.unit.id, analyzing);
+      const active: ActiveUnitAnalysis = {
+        ...queued,
+        segmentId: record.segment.id,
+        analyzingState: analyzing,
+      };
+      this.#activeAnalysis = active;
+      void this.#executeActive(active, record, snapshot);
+      return;
+    }
+  }
+
+  async #executeActive(
+    active: ActiveUnitAnalysis,
+    record: RuntimeUnitRecord,
+    snapshot: ReturnType<typeof captureAnalysisSnapshot>,
+  ): Promise<void> {
+    let finalOutcome: AnalysisOutcome;
     try {
       const outcome = await this.#analysisCoordinator.analyze(
         record.segment,
-        configuration,
+        active.configuration,
         record.analysisContext,
       );
 
-      if (this.#activeBatch !== batch) {
-        return outcome.status === "stale" || batch.supersededAs === "stale"
-          ? STALE_OUTCOME
-          : ABORTED_OUTCOME;
-      }
-
-      if (outcome.status === "failed") {
+      if (active.supersededAs !== undefined) {
+        finalOutcome = outcomeForReason(active.supersededAs);
+      } else if (outcome.status === "failed") {
         this.#manager.setState(
           record.unit.id,
-          markUnitAnalysisFailed(analyzing, record.unit),
+          markUnitAnalysisFailed(active.analyzingState, record.unit),
         );
-        return outcome;
+        finalOutcome = outcome;
+      } else if (outcome.status === "stale" || outcome.status === "aborted") {
+        this.#stopAnalyzing(record, active.analyzingState);
+        finalOutcome = outcome;
+      } else {
+        finalOutcome = this.#commitAppliedOutcome(
+          active,
+          record,
+          snapshot,
+          outcome,
+        );
       }
-      if (outcome.status === "stale" || outcome.status === "aborted") {
-        this.#stopAnalyzing(record, analyzing);
-        return outcome;
-      }
-
-      const currentRecord = this.#records.get(record.unit.id);
-      if (
-        currentRecord === undefined ||
-        currentRecord.segment !== record.segment ||
-        createUnitSourceFingerprint(currentRecord.unit) !==
-          createUnitSourceFingerprint(record.unit)
-      ) {
-        return STALE_OUTCOME;
-      }
-      const currentConfiguration = this.#configuration ?? configuration;
-      const currentStamp = captureAnalysisSnapshot(
-        currentRecord.segment,
-        currentConfiguration,
-        currentRecord.analysisContext,
-      ).dependencyStamp;
-      if (
-        !dependencyStampMatches(snapshot.dependencyStamp, currentStamp) ||
-        createUnitSourceFingerprint(currentRecord.unit) !==
-          analyzing.sourceFingerprint
-      ) {
-        this.#stopAnalyzing(currentRecord, analyzing);
-        return STALE_OUTCOME;
-      }
-
-      const result = resultFromAppliedTracks(
-        record.segment,
-        outcome.appliedTrackIds,
-        snapshot.dependencyStamp,
-      );
-      currentRecord.resultTrackIds = Object.freeze([
-        ...outcome.appliedTrackIds,
-      ]);
-      this.#manager.setState(
-        record.unit.id,
-        markUnitAnalysisCompleted(analyzing, currentRecord.unit, result),
-      );
-
-      return Object.freeze({
-        status: "applied" as const,
-        appliedTrackIds: Object.freeze([...outcome.appliedTrackIds]),
-      });
-    } finally {
-      if (this.#activeBatch === batch) {
-        this.#activeBatch = undefined;
+    } catch (error) {
+      if (active.supersededAs !== undefined) {
+        finalOutcome = outcomeForReason(active.supersededAs);
+      } else {
+        const currentRecord = this.#records.get(active.unitId);
+        const currentState = this.#manager.getState(active.unitId);
+        if (
+          currentRecord !== undefined &&
+          currentState?.status === "analyzing" &&
+          currentRecord.segment.id === active.segmentId
+        ) {
+          this.#manager.setState(
+            active.unitId,
+            markUnitAnalysisFailed(currentState, currentRecord.unit),
+          );
+        }
+        finalOutcome = Object.freeze({ status: "failed" as const, error });
       }
     }
+
+    if (this.#activeAnalysis === active) {
+      this.#activeAnalysis = undefined;
+    }
+    active.resolve(finalOutcome);
+    this.#drainQueue();
+  }
+
+  #commitAppliedOutcome(
+    active: ActiveUnitAnalysis,
+    record: RuntimeUnitRecord,
+    snapshot: ReturnType<typeof captureAnalysisSnapshot>,
+    outcome: Extract<AnalysisOutcome, { readonly status: "applied" }>,
+  ): AnalysisOutcome {
+    const currentRecord = this.#records.get(record.unit.id);
+    if (
+      currentRecord === undefined ||
+      currentRecord.segment !== record.segment ||
+      createUnitSourceFingerprint(currentRecord.unit) !==
+        active.sourceFingerprint
+    ) {
+      return STALE_OUTCOME;
+    }
+
+    const currentConfiguration = this.#configuration ?? active.configuration;
+    const currentStamp = captureAnalysisSnapshot(
+      currentRecord.segment,
+      currentConfiguration,
+      currentRecord.analysisContext,
+    ).dependencyStamp;
+    if (!dependencyStampMatches(snapshot.dependencyStamp, currentStamp)) {
+      this.#stopAnalyzing(currentRecord, active.analyzingState);
+      return STALE_OUTCOME;
+    }
+
+    const result = resultFromAppliedTracks(
+      record.segment,
+      outcome.appliedTrackIds,
+      snapshot.dependencyStamp,
+    );
+    currentRecord.resultTrackIds = Object.freeze([...outcome.appliedTrackIds]);
+    this.#manager.setState(
+      record.unit.id,
+      markUnitAnalysisCompleted(
+        active.analyzingState,
+        currentRecord.unit,
+        result,
+      ),
+    );
+    return Object.freeze({
+      status: "applied" as const,
+      appliedTrackIds: Object.freeze([...outcome.appliedTrackIds]),
+    });
   }
 
   #createSegment(sourceText: string): WritingSegment {
@@ -357,6 +555,98 @@ export class IncrementalUnitAnalysisCoordinator {
       sourceTrackId: asTrackId(`${prefix}-source`),
       sourceText,
     });
+  }
+
+  #takeNextPending(): QueuedUnitAnalysis | undefined {
+    if (this.#pendingManual !== undefined) {
+      const next = this.#pendingManual;
+      this.#pendingManual = undefined;
+      return next;
+    }
+
+    const nextCompletion = [...this.#pendingCompletions.values()].sort(
+      (left, right) =>
+        (this.#records.get(left.unitId)?.unit.order ?? Number.MAX_SAFE_INTEGER) -
+        (this.#records.get(right.unitId)?.unit.order ?? Number.MAX_SAFE_INTEGER),
+    )[0];
+    if (nextCompletion !== undefined) {
+      this.#pendingCompletions.delete(nextCompletion.unitId);
+      return nextCompletion;
+    }
+
+    const next = this.#pendingDebounced;
+    this.#pendingDebounced = undefined;
+    return next;
+  }
+
+  #removePending(analysis: QueuedUnitAnalysis): void {
+    if (this.#pendingManual === analysis) {
+      this.#pendingManual = undefined;
+    }
+    if (this.#pendingCompletions.get(analysis.unitId) === analysis) {
+      this.#pendingCompletions.delete(analysis.unitId);
+    }
+    if (this.#pendingDebounced === analysis) {
+      this.#pendingDebounced = undefined;
+    }
+  }
+
+  #analysisStillCurrent(analysis: QueuedUnitAnalysis): boolean {
+    const record = this.#records.get(analysis.unitId);
+    if (
+      record === undefined ||
+      this.#configuration === undefined ||
+      createUnitSourceFingerprint(record.unit) !== analysis.sourceFingerprint
+    ) {
+      return false;
+    }
+
+    const currentStamp = captureAnalysisSnapshot(
+      record.segment,
+      this.#configuration,
+      record.analysisContext,
+    ).dependencyStamp;
+    return dependencyStampMatches(analysis.dependencyStamp, currentStamp);
+  }
+
+  #discardObsoletePending(): void {
+    for (const analysis of this.#allPending()) {
+      if (!this.#analysisStillCurrent(analysis)) {
+        this.#removePending(analysis);
+        analysis.resolve(STALE_OUTCOME);
+      }
+    }
+  }
+
+  #cancelActiveIfObsolete(): void {
+    const active = this.#activeAnalysis;
+    if (
+      active !== undefined &&
+      active.supersededAs === undefined &&
+      !this.#analysisStillCurrent(active)
+    ) {
+      this.#supersedeActiveAnalysis("stale");
+    }
+  }
+
+  #allPending(): QueuedUnitAnalysis[] {
+    const pending: QueuedUnitAnalysis[] = [];
+    if (this.#pendingManual !== undefined) {
+      pending.push(this.#pendingManual);
+    }
+    pending.push(...this.#pendingCompletions.values());
+    if (this.#pendingDebounced !== undefined) {
+      pending.push(this.#pendingDebounced);
+    }
+    return pending;
+  }
+
+  #cancelPending(reason: "stale" | "aborted"): void {
+    const outcome = outcomeForReason(reason);
+    for (const analysis of this.#allPending()) {
+      this.#removePending(analysis);
+      analysis.resolve(outcome);
+    }
   }
 
   #reconcileDependencyStates(): void {
@@ -422,21 +712,51 @@ export class IncrementalUnitAnalysisCoordinator {
     );
   }
 
-  #supersedeActiveBatch(reason: "stale" | "aborted"): void {
-    const active = this.#activeBatch;
+  #supersedeActiveAnalysis(reason: "stale" | "aborted"): void {
+    const active = this.#activeAnalysis;
     if (active === undefined) {
       return;
     }
 
-    active.supersededAs = reason;
+    active.supersededAs =
+      active.supersededAs === "stale" ? "stale" : reason;
     this.#analysisCoordinator.cancelAnalysis(active.segmentId);
     const record = this.#records.get(active.unitId);
     const state = this.#manager.getState(active.unitId);
     if (record !== undefined && state?.status === "analyzing") {
       this.#stopAnalyzing(record, state);
     }
-    this.#activeBatch = undefined;
   }
+}
+
+function createQueuedUnitAnalysis(
+  unit: WritingUnit,
+  dependencyStamp: DependencyStamp,
+  configuration: AnalysisConfiguration,
+  kind: UnitAnalysisRequestKind,
+): QueuedUnitAnalysis {
+  let resolve!: (outcome: AnalysisOutcome) => void;
+  const promise = new Promise<AnalysisOutcome>((resolver) => {
+    resolve = resolver;
+  });
+
+  return {
+    unitId: unit.id,
+    sourceFingerprint: createUnitSourceFingerprint(unit),
+    dependencyStamp,
+    configuration: copyAnalysisConfiguration(configuration),
+    kind,
+    promise,
+    resolve,
+  };
+}
+
+function requestPriority(kind: UnitAnalysisRequestKind): number {
+  return kind === "manual" ? 3 : kind === "completion" ? 2 : 1;
+}
+
+function outcomeForReason(reason: "stale" | "aborted"): AnalysisOutcome {
+  return reason === "stale" ? STALE_OUTCOME : ABORTED_OUTCOME;
 }
 
 function resultFromAppliedTracks(
@@ -496,26 +816,6 @@ function assertUnitsMapToSelection(
       throw new TypeError("WritingUnit must map exactly to selection.activeText.");
     }
   }
-}
-
-function createSynchronizationKey(
-  selection: ContextSelection,
-  units: readonly WritingUnit[],
-): string {
-  return JSON.stringify([
-    selection.activeText,
-    selection.sourceRange.start,
-    selection.sourceRange.end,
-    selection.beforeContext,
-    selection.afterContext,
-    units.map((unit) => [
-      unit.id,
-      unit.text,
-      unit.range.start,
-      unit.range.end,
-      unit.order,
-    ]),
-  ]);
 }
 
 function configurationIdentity(configuration: AnalysisConfiguration): string {

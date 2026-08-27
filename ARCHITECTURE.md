@@ -110,6 +110,19 @@ Unit identity is stable only within one selection analysis. V1 uses deterministi
 
 The initial `SimpleWritingUnitSegmenter` is deterministic. It includes sentence-ending punctuation (`.`, `!`, `?`, `。`, `！`, and `？`) in the preceding unit and also splits at blank-line paragraph breaks. It retains unfinished text, emits no empty or whitespace-only units, excludes inter-unit sentence whitespace and paragraph separators, and otherwise preserves every character inside each unit range without trimming. It is deliberately language-agnostic and does not attempt abbreviation, decimal, or NLP-aware sentence detection.
 
+Automatic cursor-local timing is classified by a pure application-layer `UnitAnalysisTriggerPolicy`:
+
+```text
+cursor-local source change
+          ↓
+    trigger policy
+     ↙          ↘
+sentence end   unfinished
+  immediate     debounce
+```
+
+The v1 sentence-end rule uses the segmenter's existing six terminal characters. Completion triggers are idempotent by unit-source fingerprint within the current selection: repeated synchronization, cursor movement, or following whitespace does not repeatedly trigger the same completed source. Explicit selections and composition-blocked input bypass this automatic cursor-local policy. Manual Analyze remains immediate.
+
 The cursor-local Obsidian path is:
 
 ```text
@@ -122,7 +135,7 @@ TextContext
   → provider
 ```
 
-`IncrementalUnitAnalysisCoordinator` is application-layer orchestration above the existing single-segment `AnalysisCoordinator`; it does not call a provider directly. It keeps a small in-memory record binding each current `WritingUnit`, its isolated `WritingSegment`, exact analysis context, and lifecycle state. Synchronization and currentness evaluation are separate from scheduling. Incremental v1 schedules only the cursor-active unit when that unit is idle, stale, or failed; it does not fan out work to non-active siblings. One unit failure marks only that unit failed and preserves sibling state.
+`IncrementalUnitAnalysisCoordinator` is application-layer orchestration above the existing single-segment `AnalysisCoordinator`; it does not call a provider directly. It keeps a small in-memory record binding each current `WritingUnit`, its isolated `WritingSegment`, exact analysis context, and lifecycle state. Synchronization and currentness evaluation are separate from scheduling. Incremental v1 permits at most one active provider request. Pending work is bounded to one manual target, one latest speculative debounce target, and at most one completion target per unit in the current selection. Completed targets are processed in source order when practical; obsolete source or dependency snapshots are discarded before execution. This is bounded sequential work, not concurrent provider fan-out or durable history.
 
 Non-empty explicit selections retain higher semantic priority and remain one whole-selection analysis target in v1:
 
@@ -130,7 +143,7 @@ Non-empty explicit selections retain higher semantic priority and remain one who
 TextContext → ContextSelection → WritingSegment → AnalysisCoordinator → provider
 ```
 
-The transitional side panel presents only the cursor-associated current unit for cursor-local analysis. Existing debounce timing is unchanged, and unfinished final units remain analyzable when that debounce fires. Explicit multi-sentence selections are not split into independent analysis or replacement targets.
+The transitional side panel presents only the cursor-associated current unit for cursor-local analysis. Existing debounce timing is unchanged for unfinished units, while completed units bypass that delay. The active presentation target is not necessarily the valid in-flight target: a just-completed previous unit may finish and enter its cache while the user is already typing the next unit, without repainting the next unit's panel. Explicit multi-sentence selections are not split into independent analysis or replacement targets.
 
 `WritingUnit`, `UnitAnalysisState`, and tracks have intentionally separate responsibilities:
 
@@ -151,13 +164,13 @@ Current unit output requires two independent checks:
 
 Source invalidation and dependency invalidation are intentionally different. If a unit's own source fingerprint changes, its older result is discarded and the unit resets to idle for the new source. If the source is unchanged but the exact context or another dependency changes, the older result is retained internally in `stale` state but is neither current nor presentable. A stale unit is not automatically scheduled: only the active target is eagerly refreshed under the existing debounce, while stale siblings remain dormant until they become active. The same lazy rule applies to profile and configuration changes, balancing semantic correctness, latency, and API cost.
 
-When a stale unit becomes active, it transitions through analyzing to completed and replaces the stored result and producing stamp. Cancellation stops obsolete active work where possible, while the final unit-source fingerprint and full `DependencyStamp` comparison remain authoritative against late completion. Punctuation-triggered scheduling, background stale-unit refresh, and concurrent unit requests remain deferred.
+When a stale unit becomes active, it transitions through analyzing to completed and replaces the stored result and producing stamp. Cancellation stops obsolete active work where possible, while the final unit-source fingerprint and full `DependencyStamp` comparison remain authoritative against late completion. Cursor movement alone does not cancel a still-valid unit request. Source, effective context, configuration, document/session, or explicit cancellation changes do cancel affected work; a cancelled transport continues to occupy the single-flight slot until it settles so provider concurrency cannot fan out.
 
-Per-unit semantic context is constructed from outer `ContextSelection` context plus earlier and later text in the same active block. Only `unit.text` becomes `sourceText`; surrounding text remains read-only and the unit is not duplicated into it. Unit ranges remain relative to `ContextSelection.activeText`; adding `ContextSelection.sourceRange.start` maps them to host-source offsets.
+Incremental per-unit semantic context is intentionally causal. `beforeContext` contains outer `ContextSelection.beforeContext` plus earlier same-block text. `afterContext` contains only outer `ContextSelection.afterContext`; later text in the active block is excluded. Consequently, later typing does not invalidate already completed earlier units, while editing earlier text may invalidate later units whose exact before-context fingerprint changes. This direction supports realtime stability, predictable invalidation, lower latency, and controlled API cost without weakening full `DependencyStamp` comparison. Only `unit.text` becomes `sourceText`, and unit ranges remain relative to `ContextSelection.activeText`; adding `ContextSelection.sourceRange.start` maps them to host-source offsets.
 
 Each unit's confirmed native intent remains isolated in that unit's `WritingSegment`. Its existing source-revision semantics invalidate the confirmation when that unit source changes; intent is never shared across unit segments. Explicit-selection fallback retains the existing whole-selection behavior.
 
-Persistent unit identity, diff-based relocation, semantic matching, punctuation-triggered analysis, dynamic debounce, concurrency fan-out, streaming, multi-unit history UI, and replacement behavior remain deferred.
+Persistent unit identity, diff-based relocation, semantic matching, adaptive debounce, phrase-level triggers, abbreviation-aware segmentation, concurrency fan-out, streaming, multi-unit history UI, and replacement behavior remain deferred.
 
 ## State ownership
 

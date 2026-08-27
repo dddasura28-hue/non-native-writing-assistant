@@ -2,9 +2,11 @@ import {
   AnalysisCoordinator,
   IncrementalUnitAnalysisCoordinator,
   LocalBlockContextSelector,
+  SentenceUnitAnalysisTriggerPolicy,
   SimpleWritingUnitSegmenter,
   assertContextSelectionMapsToText,
   createAnalysisContext,
+  createUnitSourceFingerprint,
   createWholeAvailableAnalysisContext,
   selectCurrentWritingUnit,
   type AnalysisConfiguration,
@@ -13,6 +15,9 @@ import {
   type ContextSelection,
   type ContextSelector,
   type TextContext,
+  type UnitAnalysisRequestKind,
+  type UnitAnalysisTriggerPolicy,
+  type UnitSourceFingerprint,
   type WritingUnit,
   type WritingUnitSegmenter,
 } from "@non-native-writing/application";
@@ -51,6 +56,7 @@ export interface WritingAssistantControllerOptions {
   readonly analysisConfigurationSource?: AnalysisConfigurationSource;
   readonly contextSelector?: ContextSelector;
   readonly writingUnitSegmenter?: WritingUnitSegmenter;
+  readonly unitAnalysisTriggerPolicy?: UnitAnalysisTriggerPolicy;
 }
 
 export type RevealWritingAssistant = () => Promise<WritingAssistantPresenter>;
@@ -72,12 +78,14 @@ interface DocumentState {
   visibleTrackIds: readonly TrackId[];
   status: AnalysisStatus;
   statusDetail?: string;
+  readonly immediateCompletionFingerprints: Set<UnitSourceFingerprint>;
 }
 
 interface SourceActivation {
   readonly documentState: DocumentState;
   readonly documentChanged: boolean;
   readonly shouldAutomaticallyAnalyze: boolean;
+  readonly sourceChanged: boolean;
 }
 
 interface SelectedDocumentSource {
@@ -85,6 +93,12 @@ interface SelectedDocumentSource {
   readonly selection: ContextSelection | null;
   readonly explicitSelection: boolean;
   readonly cursorOffset: number;
+  readonly compositionBlocked: boolean;
+}
+
+interface AutomaticAnalysisRequest {
+  readonly source: SelectedDocumentSource;
+  readonly kind: Exclude<UnitAnalysisRequestKind, "manual">;
 }
 
 interface DocumentAnalysisTarget {
@@ -98,10 +112,11 @@ export class WritingAssistantController {
   readonly #coordinator: AnalysisCoordinator;
   readonly #revealWritingAssistant: RevealWritingAssistant;
   readonly #getAutomaticPresenter: GetWritingAssistant;
-  readonly #debouncedAnalysis: DebouncedAnalysisScheduler<SelectedDocumentSource>;
+  readonly #debouncedAnalysis: DebouncedAnalysisScheduler<AutomaticAnalysisRequest>;
   readonly #analysisConfigurationSource: AnalysisConfigurationSource;
   readonly #contextSelector: ContextSelector;
   readonly #writingUnitSegmenter: WritingUnitSegmenter;
+  readonly #unitAnalysisTriggerPolicy: UnitAnalysisTriggerPolicy;
   readonly #unsubscribeAnalysisConfiguration: () => void;
   readonly #documents = new Map<string, DocumentState>();
 
@@ -128,13 +143,20 @@ export class WritingAssistantController {
       options.contextSelector ?? new LocalBlockContextSelector();
     this.#writingUnitSegmenter =
       options.writingUnitSegmenter ?? new SimpleWritingUnitSegmenter();
+    this.#unitAnalysisTriggerPolicy =
+      options.unitAnalysisTriggerPolicy ??
+      new SentenceUnitAnalysisTriggerPolicy();
     this.#unsubscribeAnalysisConfiguration =
       this.#analysisConfigurationSource.onDidChange(() => {
         this.#handleAnalysisConfigurationChange();
       });
     this.#debouncedAnalysis = new DebouncedAnalysisScheduler(
-      (source) => {
-        void this.#analyzeSource(source, false).catch(() => {
+      (request) => {
+        void this.#analyzeSource(
+          request.source,
+          false,
+          request.kind,
+        ).catch(() => {
           // Automatic host failures remain quiet; analysis failures are rendered.
         });
       },
@@ -165,9 +187,34 @@ export class WritingAssistantController {
       return;
     }
 
-    if (activation.shouldAutomaticallyAnalyze) {
+    const currentUnit =
+      state.currentUnitId === null
+        ? null
+        : state.unitAnalysis.getRecord(state.currentUnitId)?.unit ?? null;
+    const currentFingerprint =
+      currentUnit === null ? null : createUnitSourceFingerprint(currentUnit);
+    const trigger = this.#unitAnalysisTriggerPolicy.decide({
+      unit: currentUnit,
+      automaticAnalysisNeeded: activation.shouldAutomaticallyAnalyze,
+      sourceChanged: activation.sourceChanged,
+      explicitSelection: source.explicitSelection,
+      compositionBlocked: source.compositionBlocked,
+      triggeredCompletionFingerprints:
+        state.immediateCompletionFingerprints,
+    });
+
+    if (trigger !== "none") {
       resetPresentationState(state);
-      this.#debouncedAnalysis.schedule(source);
+      const request: AutomaticAnalysisRequest = {
+        source,
+        kind: trigger === "immediate" ? "completion" : "debounced",
+      };
+      if (trigger === "immediate") {
+        state.immediateCompletionFingerprints.add(currentFingerprint!);
+        this.#debouncedAnalysis.scheduleImmediate(request);
+      } else {
+        this.#debouncedAnalysis.schedule(request);
+      }
     }
 
     this.#queuePresentation(state);
@@ -176,7 +223,7 @@ export class WritingAssistantController {
   async analyze(
     observed: ObservedTextContext,
   ): Promise<AnalysisOutcome | undefined> {
-    return this.#analyzeSource(this.#selectContext(observed), true);
+    return this.#analyzeSource(this.#selectContext(observed), true, "manual");
   }
 
   presentActive(presenter: WritingAssistantPresenter): void {
@@ -193,6 +240,7 @@ export class WritingAssistantController {
   async #analyzeSource(
     source: SelectedDocumentSource,
     revealView: boolean,
+    requestKind: UnitAnalysisRequestKind,
   ): Promise<AnalysisOutcome | undefined> {
     if (this.#disposed) {
       return undefined;
@@ -203,7 +251,6 @@ export class WritingAssistantController {
     const documentRunNumber = ++state.documentRunNumber;
 
     this.#coordinator.cancelAnalysis(state.segment.id);
-    state.unitAnalysis.cancel();
 
     if (
       source.selection === null ||
@@ -224,22 +271,26 @@ export class WritingAssistantController {
     state.statusDetail = undefined;
     state.visibleTrackIds = Object.freeze([]);
 
-    const presenter = await this.#getPresenter(revealView);
-    if (!this.#isCurrentDocumentRun(state, documentRunNumber)) {
-      return undefined;
-    }
-
-    presenter?.present(this.#viewModelFor(state));
-
     const configuration = this.#analysisConfigurationSource.getConfiguration();
     state.configuration = configuration;
-    const outcome = state.explicitSelection
-      ? await this.#coordinator.analyze(
+    const requestedUnitId = state.currentUnitId;
+    const outcomePromise = state.explicitSelection
+      ? this.#coordinator.analyze(
           state.segment,
           configuration,
           state.analysisTarget?.analysisContext ?? EMPTY_ANALYSIS_CONTEXT,
         )
-      : await state.unitAnalysis.analyze(state.currentUnitId!, configuration);
+      : state.unitAnalysis.analyze(
+          requestedUnitId!,
+          configuration,
+          requestKind,
+        );
+    const presenter = await this.#getPresenter(revealView);
+    if (this.#isCurrentDocumentRun(state, documentRunNumber)) {
+      presenter?.present(this.#viewModelFor(state));
+    }
+
+    const outcome = await outcomePromise;
 
     if (state.documentRunNumber !== documentRunNumber || this.#disposed) {
       return outcome;
@@ -302,7 +353,10 @@ export class WritingAssistantController {
       if (state.documentKey === this.#activeDocumentKey) {
         this.#queuePresentation(state);
         if (state.selectedSource.selection !== null) {
-          this.#debouncedAnalysis.schedule(state.selectedSource);
+          this.#debouncedAnalysis.schedule({
+            source: state.selectedSource,
+            kind: "debounced",
+          });
         }
       }
     }
@@ -335,6 +389,7 @@ export class WritingAssistantController {
         documentRunNumber: 0,
         visibleTrackIds: Object.freeze([]),
         status: "Idle",
+        immediateCompletionFingerprints: new Set(),
       };
       this.#documents.set(source.documentKey, state);
       this.#coordinator.updateAnalysisContext(
@@ -364,6 +419,9 @@ export class WritingAssistantController {
       analysisTarget?.analysisContext.contextFingerprint;
     const selectionModeChanged =
       state.explicitSelection !== source.explicitSelection;
+    if (sourceLocationChanged || selectionModeChanged) {
+      state.immediateCompletionFingerprints.clear();
+    }
     if (sourceChanged || targetChanged || selectionModeChanged) {
       state.documentRunNumber += 1;
       this.#coordinator.cancelAnalysis(state.segment.id);
@@ -398,7 +456,6 @@ export class WritingAssistantController {
 
     if (currentUnitChanged) {
       state.documentRunNumber += 1;
-      state.unitAnalysis.cancel();
       if (
         !state.explicitSelection &&
         state.currentUnitId !== null &&
@@ -417,6 +474,7 @@ export class WritingAssistantController {
     return {
       documentState: state,
       documentChanged,
+      sourceChanged: documentCreated || sourceChanged,
       shouldAutomaticallyAnalyze:
         source.selection !== null &&
         (documentCreated ||
@@ -439,6 +497,8 @@ export class WritingAssistantController {
       explicitSelection:
         selection !== null && observed.textContext.selection !== null,
       cursorOffset: observed.textContext.cursorOffset,
+      compositionBlocked:
+        selection === null && observed.textContext.composition !== null,
     });
   }
 
@@ -511,6 +571,7 @@ export class WritingAssistantController {
       state.unitAnalysis.clear();
       state.units = Object.freeze([]);
       state.currentUnitId = null;
+      state.immediateCompletionFingerprints.clear();
       return previousCurrentUnitId !== null;
     }
 
@@ -520,6 +581,14 @@ export class WritingAssistantController {
     state.unitAnalysis.synchronize(source.selection, units);
     state.unitAnalysis.updateConfiguration(state.configuration);
     state.units = units;
+    const currentFingerprints = new Set(
+      units.map((unit) => createUnitSourceFingerprint(unit)),
+    );
+    for (const fingerprint of state.immediateCompletionFingerprints) {
+      if (!currentFingerprints.has(fingerprint)) {
+        state.immediateCompletionFingerprints.delete(fingerprint);
+      }
+    }
 
     const cursorRelativeOffset = Math.min(
       Math.max(

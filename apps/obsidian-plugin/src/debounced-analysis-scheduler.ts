@@ -27,6 +27,15 @@ export class DebouncedAnalysisScheduler<TValue> {
     }, this.#delayMs);
   }
 
+  scheduleImmediate(value: TValue): void {
+    if (this.#disposed) {
+      return;
+    }
+
+    this.cancel();
+    this.#run(value);
+  }
+
   cancel(): void {
     if (this.#timer === undefined) {
       return;
