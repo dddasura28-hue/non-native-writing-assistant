@@ -15,3 +15,5 @@ export * from "./unit-source-fingerprint.js";
 export * from "./writing-unit.js";
 export * from "./writing-unit-context.js";
 export * from "./writing-unit-segmenter.js";
+export * from "./host-capabilities.js";
+export * from "./text-edit-port.js";

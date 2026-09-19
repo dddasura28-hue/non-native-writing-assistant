@@ -15,13 +15,13 @@ This product helps users compose directly in a non-native target language. A dra
 - Mixed-language and unfinished text are valid input states, not errors that must be cleaned up before assistance begins.
 - Assistance is adjustable. Users decide how much help they want, which representations they see, and what style they are aiming for.
 - Representations are extensible tracks. Native intent and normalized expression are the first derived tracks, not permanent limits on the product.
-- The product is host- and provider-independent in concept. Obsidian is the first host, and any particular language model is an implementation choice.
+- The product is host- and provider-independent in concept. Obsidian is a reference host; the planned primary product is a standalone desktop application. Any particular language model is an implementation choice.
 
 ## Key user flows
 
 ### 1. Write directly in the target language
 
-The user starts or resumes a writing session and edits source text in Obsidian. They may write fluent target-language passages, mix in native-language words, or leave incomplete phrases. Source edits remain ordinary user edits and immediately become the latest truth for analysis.
+The user starts or resumes a writing session and edits source text made available by their host. They may write fluent target-language passages, mix in native-language words, or leave incomplete phrases. Source edits remain ordinary user edits and immediately become the latest truth for analysis.
 
 ### 2. Inspect assistance tracks
 
@@ -46,7 +46,7 @@ The user can change assistance strength, track visibility, and a writing style p
 
 ## MVP scope
 
-The MVP is an Obsidian-hosted writing experience with a reusable TypeScript core. It includes:
+The planned primary product is a standalone desktop writing application over the reusable engine. Obsidian remains a buildable, tested reference host and development integration; active Obsidian-first product development has ended. The following describes the broader product scope, not features all implemented in Product Host Boundary v1:
 
 - writing sessions over source text exposed by the host;
 - stable-enough writing segments for analysis and targeted application of suggestions;
@@ -62,7 +62,7 @@ The MVP is an Obsidian-hosted writing experience with a reusable TypeScript core
 - explicit application of suggestions to source text with revision checks; and
 - host-appropriate persistence of user settings and the minimum session metadata needed to restore the experience.
 
-The initial product may use one provider adapter and one Obsidian adapter, but neither defines the core domain model.
+The next desktop host initially provides its own editor, realtime unit assistance, Native Intent, Normalized output, and provider-profile/BYOK settings. Native Intent confirmation, Accept/Replace, and system-wide assistance follow later. Product Host Boundary v1 introduces only the host contracts, tests, and documentation; it creates no desktop or native runtime.
 
 ## Explicit non-goals
 
@@ -120,7 +120,7 @@ A composable unit that consumes versioned session or track inputs and produces t
 An integration that implements provider-neutral language-model capabilities using a specific service or local model.
 
 **Host adapter**  
-An integration between product use cases and a host application's text, storage, lifecycle, and editing facilities. Obsidian is the first host.
+An integration between product use cases and a host application's text, storage, lifecycle, and editing facilities. Obsidian is the reference host.
 
 ## Future possibilities
 
@@ -132,5 +132,5 @@ An integration between product use cases and a host application's text, storage,
 - Cross-segment terminology, voice, and consistency checks.
 - Learning-oriented feedback that adapts to recurring user needs without taking over authorship.
 - Additional deterministic and AI-backed processors composed into task-specific pipelines.
-- Browser extension, VS Code extension, and desktop application host adapters.
+- Platform-specific native text-input hosts after the standalone desktop application; browser and other host adapters remain future possibilities.
 - Multiple model providers, local models, capability-based routing, and privacy-sensitive execution policies.

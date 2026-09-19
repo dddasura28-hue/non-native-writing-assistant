@@ -28,7 +28,7 @@ Implementations of ports for external systems. Provider adapters translate provi
 
 ### 4. Host presentation and composition
 
-The Obsidian plugin UI, commands, lifecycle integration, and composition root. This layer selects concrete adapters, maps track presentation to Obsidian views, and wires dependencies together. Future hosts provide their own presentation and composition without changing the core.
+Each host owns its UI, commands, lifecycle integration, and composition root. The Obsidian plugin is the reference host and development integration. This layer selects concrete adapters, maps track presentation to Obsidian views, and wires dependencies together. Future hosts provide their own presentation and composition without changing the core.
 
 ## Dependency rules
 
@@ -41,7 +41,8 @@ Future host adapters ──────────────┘
 ```
 
 - The core domain may depend only on the TypeScript standard language/runtime surface and deliberately chosen host-neutral utilities.
-- The application layer may depend on core types and port interfaces, never on concrete Obsidian or provider implementations.
+- The application layer may depend on core types and host-neutral port interfaces, never on concrete host or provider implementations.
+- No reusable package may import from `apps/*`, including relative paths, re-exports, or dynamic imports. `core` has no external runtime dependencies; `application` depends only on `core`; `model-integration` owns provider/model concerns and its current schema dependency (`zod`). Hosts depend inward on these packages. Dependency-boundary tests enforce these allowlists and reject host/DOM objects in shared source. Standard portable `AbortSignal`/`AbortController` cancellation and `URL` validation remain legitimate; the DOM TypeScript library does not authorize editor/DOM state.
 - An adapter may depend on its external SDK and on the port it implements. External SDK objects, errors, and identifiers must be translated at the boundary.
 - The composition root is the only place that should know which concrete host, provider, persistence implementation, and processors are active together.
 - UI components consume application-facing view data and issue commands. They do not own domain truth or call a model provider directly.
@@ -349,3 +350,41 @@ These deferrals reduce framework code without closing the extension points descr
 - Application tests use fake hosts, providers, clocks, and processors to cover cancellation, out-of-order completion, stale results, policy changes, multiple derived tracks of one type, and ordered processor composition.
 - Adapter contract tests verify translation at provider and host boundaries without making core tests integration-dependent.
 - Host UI tests verify that suggestions require a deliberate action and that stale or failed states are visible, but UI tests do not replace domain invariant tests.
+
+## Product Host Boundary v1
+
+The shared engine is `packages/core`, `packages/application`, and `packages/model-integration`. It operates on text-input sessions, without requiring files, Markdown, persistent documents, editor leaves, DOM elements, or host editor APIs.
+
+Host direction:
+
+- `apps/obsidian-plugin`: buildable, tested reference host / development integration, with no new product features in this phase.
+- `apps/desktop-app`: planned primary standalone product (directory and runtime not created). Initially: its own text editor, realtime unit assistance, Native Intent, Normalized output, and provider-profile/BYOK settings. Later: Native Intent confirmation, Accept/Replace, and system-wide/global assistance.
+- Future Windows text-input / TSF and macOS input-method bridges: separate platform-specific hosts. Each owns text/composition capture, cursor/selection handling, lifecycle, and replacement/commit behavior. Reuse the writing engine, not a single native implementation across operating systems. TSF/InputMethodKit abstractions do not belong in core/application.
+
+### Snapshot and technical capabilities
+
+`TextContext` remains the canonical immutable snapshot: available text, UTF-16 cursor offset, normalized selection, and optional composition. Available text may be a small surrounding-text window with no persistent document. Offsets are relative to that exact window; shifting the window changes the mapping even if its text is identical. No duplicate TextInputSession aggregate is introduced.
+
+`HostCapabilities` contains four readonly booleans: `canReplaceText`, `canObserveComposition`, `canObserveSelection`, and `canProvideSurroundingText`. Its factory copies only these fields and freezes the value. These describe technical facilities, not permissions, provider features, UI availability, or proof that a particular edit is safe. A host unable to observe composition must not claim that null composition proves input has committed.
+
+### Capture, analysis, presentation, and future editing
+
+`Host -> capture TextContext -> ContextSelector -> WritingUnit / analysis -> presentation/result -> optional guarded edit after explicit user action`.
+
+A host may disappear or change between any stages. Keep existing DependencyStamp checks, source ranges, source fingerprints, cancellation, and latest-run checks. All result/presentation writes must remain currentness-checked; a future source write additionally requires the host to verify currentness at commit.
+
+`TextReplacement` is a frozen value containing a frozen UTF-16 half-open `range`, exact `expectedText`, and `replacementText`. Its factory validates the range against captured `TextContext.text` and requires the slice to equal expectedText without trimming, normalization, relocation, or merging. Empty ranges permit insertion; empty replacement text permits deletion. Unit ranges must first be mapped using the existing selection source range; before/after semantic context is never a replacement target.
+
+`TextEditPort.replace(replacement): Promise<void> | void` is a contract only. A future host supplies a port bound to one captured session, revision, and available-text window. It must not route to whatever editor is active later. The host atomically verifies session availability/identity, unchanged revision/window, composition safety, and exact expectedText before its undoable edit. Any failure (including inability to guarantee atomicity) throws/rejects without mutation; async adapters recheck at commit after awaits. Successful edits invalidate the captured port. A matching slice alone cannot prove the same session or catch edit-and-revert; host revision/lifecycle checks are mandatory. This phase implements only data validation and a test fake, not Accept/Replace behavior.
+
+No shared HostSessionId is needed now: application already uses transient segment IDs, request tokens, and coordinator lifetimes. Hosts own session binding and must cancel/clear or replace orchestration on session changes; a fake proves this with an opaque Symbol and revision, without a file path. Obsidian document keys remain inside its adapter/controller. Do not persist them in shared state or use text/fingerprint equality as session identity.
+
+### Composition policy
+
+Uncommitted composing text must not be treated as ordinary committed writing input unless explicitly supported by a future policy. Existing selectors block overlapping active ranges (including zero-width composition) and omit composing neighboring blocks; the realtime trigger policy respects composition blocking. A composition-capable host recaptures text after commit before scheduling ordinary analysis. Obsidian currently lacks public composition capture in its adapter; platform composition APIs and changes to its observation behavior are deferred.
+
+### Audit and phase limits
+
+The reusable-package audit found no inappropriate host/document dependencies to remove. Core IDs/revisions and ranges are generic. Application blank-line blocks and sentence punctuation are plain-text policies, not Markdown parsing. Model integration owns provider prompts, profiles, secret-resolution and transport ports; URLs and cancellation are portable, and no editor, storage implementation, or host SDK crosses those ports. The Obsidian controller owns document/run routing; application currentness remains based on shared snapshots and stamps. Provider/BYOK behavior is unchanged.
+
+Deliberately deferred: Tauri creation, desktop UI, framework selection (React/Vue/Svelte), Accept/Replace runtime, global hotkeys, clipboard integration, accessibility APIs, Windows TSF, macOS InputMethodKit, browser extensions, mobile keyboards, accounts/cloud sync, updater/installer, and diff/merge conflict resolution. No platform code or external service calls are required for this phase.

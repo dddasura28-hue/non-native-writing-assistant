@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -118,23 +118,9 @@ describe("provider infrastructure", () => {
     expect(String(failure)).not.toContain(fakeSecret);
   });
 
-  it("keeps vendor and Obsidian imports out of application and core", () => {
-    const packageRoot = process.cwd();
-    const sources = [
-      ...readTypeScriptFiles(resolve(packageRoot, "../application/src")),
-      ...readTypeScriptFiles(resolve(packageRoot, "../core/src")),
-    ].map((path) => readFileSync(path, "utf8"));
-
-    for (const source of sources) {
-      expect(source).not.toMatch(
-        /from\s+["'](?:openai|@anthropic-ai|@google\/genai|obsidian|@codemirror\/[^"']+)["']/,
-      );
-    }
-  });
-
   it("keeps provider and model types out of the text-context boundary", () => {
     const applicationSource = resolve(process.cwd(), "../application/src");
-    const sources = ["text-context.ts", "context-selector.ts"].map((file) =>
+    const sources = ["text-context.ts", "context-selector.ts", "host-capabilities.ts", "text-edit-port.ts"].map((file) =>
       readFileSync(resolve(applicationSource, file), "utf8"),
     );
 
@@ -145,13 +131,3 @@ describe("provider infrastructure", () => {
     }
   });
 });
-
-function readTypeScriptFiles(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) {
-      return readTypeScriptFiles(path);
-    }
-    return entry.name.endsWith(".ts") ? [path] : [];
-  });
-}

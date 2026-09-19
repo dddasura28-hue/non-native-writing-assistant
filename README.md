@@ -6,6 +6,8 @@ An author-first writing assistant for composing directly in a non-native languag
 
 The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to provider-profile mode, with persistent Obsidian settings and direct OpenAI, Anthropic, Gemini, and OpenAI-compatible BYOK adapters. The deterministic demo provider and local-only OpenAI development gateway remain optional development paths.
 
+Obsidian is now the reference host / development integration. The next planned primary product is a standalone desktop writing application; platform-specific native text-input hosts follow later. Product Host Boundary v1 adds immutable capabilities and a guarded edit contract while preserving the existing engine and provider/BYOK behavior. Desktop UI, native bridges, and Accept/Replace runtime remain deferred. See [ARCHITECTURE.md](ARCHITECTURE.md#product-host-boundary-v1).
+
 ## Local AI development
 
 The API key belongs only to the gateway process. It must never be placed in Obsidian settings, plugin source, manifests, or build variables. `.env.example` documents the two supported environment names, but the gateway reads them directly from its process environment and does not load `.env` files.

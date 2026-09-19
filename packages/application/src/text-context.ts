@@ -13,11 +13,11 @@ export interface TextComposition {
 export interface TextContext {
   /** Text available to the host; this need not be a complete document. */
   readonly text: string;
-  /** Active/primary cursor offset relative to text. */
+  /** UTF-16 active/primary cursor offset relative to the available text. */
   readonly cursorOffset: number;
   /** Null is the canonical representation of no selected text. */
   readonly selection: TextRange | null;
-  /** Uncommitted input-method text, when exposed by the host. */
+  /** Uncommitted input; exclude from ordinary analysis until committed. */
   readonly composition: TextComposition | null;
 }
 
