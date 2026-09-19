@@ -4,4 +4,7 @@ node_modules/
 .env.*
 !.env.example
 apps/dev-ai-gateway/dist/
+apps/desktop-app/dist/
+apps/desktop-app/src-tauri/gen/schemas/
+apps/desktop-app/src-tauri/target/
 apps/obsidian-plugin/dist/

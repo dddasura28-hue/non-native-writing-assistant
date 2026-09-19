@@ -4,9 +4,34 @@ An author-first writing assistant for composing directly in a non-native languag
 
 ## Development status
 
-The host-independent TypeScript core, asynchronous application orchestration, and initial Obsidian side-panel host are implemented. The plugin defaults to provider-profile mode, with persistent Obsidian settings and direct OpenAI, Anthropic, Gemini, and OpenAI-compatible BYOK adapters. The deterministic demo provider and local-only OpenAI development gateway remain optional development paths.
+The host-independent TypeScript core, asynchronous application orchestration, and the first standalone desktop shell are implemented. `apps/desktop-app` is the primary planned product host and uses Tauri 2, React, TypeScript, Vite, and a native HTML textarea. It currently validates the standalone window, `TextContext` capture, UTF-16 selection/caret semantics, composition observation, host capabilities, and guarded `TextEditPort` behavior.
 
-Obsidian is now the reference host / development integration. The next planned primary product is a standalone desktop writing application; platform-specific native text-input hosts follow later. Product Host Boundary v1 adds immutable capabilities and a guarded edit contract while preserving the existing engine and provider/BYOK behavior. Desktop UI, native bridges, and Accept/Replace runtime remain deferred. See [ARCHITECTURE.md](ARCHITECTURE.md#product-host-boundary-v1).
+The assistance pane deliberately shows neutral Native Intent and Normalized placeholders. Live AI/provider requests, provider settings, Native Intent confirmation, Accept/Replace UI, system-wide capture, persistence, and native input-method bridges remain deferred. The guarded desktop edit adapter is infrastructure only and is not exposed as a product action in this phase.
+
+`apps/obsidian-plugin` remains a frozen, buildable reference/development host. Its provider-profile mode, persistent Obsidian settings, direct OpenAI, Anthropic, Gemini, and OpenAI-compatible BYOK adapters remain unchanged. The deterministic demo provider and local-only OpenAI development gateway remain optional development paths. See [ARCHITECTURE.md](ARCHITECTURE.md#desktop-app-shell-v1).
+
+## Desktop development
+
+Install workspace dependencies and start the native desktop shell:
+
+```powershell
+pnpm install
+pnpm dev:desktop
+```
+
+For frontend-only work in a browser:
+
+```powershell
+pnpm dev:desktop:frontend
+```
+
+The native command requires the Tauri 2 Windows prerequisites: Rust with the MSVC toolchain, Microsoft C++ Build Tools, and WebView2. Frontend validation remains available without that toolchain:
+
+```powershell
+pnpm --dir apps/desktop-app test
+pnpm --dir apps/desktop-app typecheck
+pnpm --dir apps/desktop-app build
+```
 
 ## Local AI development
 

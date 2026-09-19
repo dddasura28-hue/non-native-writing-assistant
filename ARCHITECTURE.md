@@ -28,16 +28,16 @@ Implementations of ports for external systems. Provider adapters translate provi
 
 ### 4. Host presentation and composition
 
-Each host owns its UI, commands, lifecycle integration, and composition root. The Obsidian plugin is the reference host and development integration. This layer selects concrete adapters, maps track presentation to Obsidian views, and wires dependencies together. Future hosts provide their own presentation and composition without changing the core.
+Each host owns its UI, commands, lifecycle integration, and composition root. The standalone desktop app is the primary planned product host. The Obsidian plugin remains a frozen reference host and development integration. Each host selects concrete adapters, maps track presentation to its own UI, and wires dependencies together without changing the core.
 
 ## Dependency rules
 
 Dependencies point inward:
 
 ```text
-Obsidian presentation/composition ─┐
-Provider and persistence adapters ─┼─> application/orchestration ─> core domain
-Future host adapters ──────────────┘
+Desktop presentation/composition ──┐
+Obsidian presentation/composition ─┼─> application/orchestration ─> core domain
+Provider and persistence adapters ─┘
 ```
 
 - The core domain may depend only on the TypeScript standard language/runtime surface and deliberately chosen host-neutral utilities.
@@ -358,7 +358,7 @@ The shared engine is `packages/core`, `packages/application`, and `packages/mode
 Host direction:
 
 - `apps/obsidian-plugin`: buildable, tested reference host / development integration, with no new product features in this phase.
-- `apps/desktop-app`: planned primary standalone product (directory and runtime not created). Initially: its own text editor, realtime unit assistance, Native Intent, Normalized output, and provider-profile/BYOK settings. Later: Native Intent confirmation, Accept/Replace, and system-wide/global assistance.
+- `apps/desktop-app`: primary planned standalone product host. Desktop App Shell v1 creates its Tauri/React runtime, native textarea host, context capture, capabilities, and guarded edit infrastructure. Realtime unit assistance, provider profiles, and user-facing application of suggestions remain later phases.
 - Future Windows text-input / TSF and macOS input-method bridges: separate platform-specific hosts. Each owns text/composition capture, cursor/selection handling, lifecycle, and replacement/commit behavior. Reuse the writing engine, not a single native implementation across operating systems. TSF/InputMethodKit abstractions do not belong in core/application.
 
 ### Snapshot and technical capabilities
@@ -387,4 +387,16 @@ Uncommitted composing text must not be treated as ordinary committed writing inp
 
 The reusable-package audit found no inappropriate host/document dependencies to remove. Core IDs/revisions and ranges are generic. Application blank-line blocks and sentence punctuation are plain-text policies, not Markdown parsing. Model integration owns provider prompts, profiles, secret-resolution and transport ports; URLs and cancellation are portable, and no editor, storage implementation, or host SDK crosses those ports. The Obsidian controller owns document/run routing; application currentness remains based on shared snapshots and stamps. Provider/BYOK behavior is unchanged.
 
-Deliberately deferred: Tauri creation, desktop UI, framework selection (React/Vue/Svelte), Accept/Replace runtime, global hotkeys, clipboard integration, accessibility APIs, Windows TSF, macOS InputMethodKit, browser extensions, mobile keyboards, accounts/cloud sync, updater/installer, and diff/merge conflict resolution. No platform code or external service calls are required for this phase.
+That completed boundary phase deliberately deferred Tauri creation, desktop UI, framework selection, Accept/Replace runtime, global hotkeys, clipboard integration, accessibility APIs, Windows TSF, macOS InputMethodKit, browser extensions, mobile keyboards, accounts/cloud sync, updater/installer, and diff/merge conflict resolution. Desktop App Shell v1 implements only the first three deferrals; the others remain deferred.
+
+## Desktop App Shell v1
+
+`apps/desktop-app` is a pnpm workspace package using React, TypeScript, Vite, and Tauri 2. It is an outer host: the frontend imports reusable application contracts, while React, browser DOM access, textarea state, and Tauri configuration remain inside the app. The Rust layer only creates the native window and contains no writing-engine types or behavior.
+
+The desktop text host captures the textarea's full current value, normalized selection, active caret, and observable composition as a `TextContext`. HTML textarea offsets are already UTF-16 code-unit offsets. For a backward selection, `selectionStart` is the active caret; for forward or directionless selections, `selectionEnd` is the deterministic active caret. The normalized `TextContext.selection` remains ordered independently of that direction.
+
+Composition events are tracked at the host. When current event data maps exactly into the textarea value at the observed composition origin, the adapter emits that exact half-open range. During browser event-order transitions where the value does not confirm the event data, it emits a zero-width composition marker at the current observed caret with empty composition text. This conservatively blocks ordinary analysis without fabricating a range. `compositionend` clears the marker and causes a committed context recapture.
+
+The desktop host advertises replacement, composition observation, selection observation, and surrounding-text access. Its `TextEditPort` adapter is bound to one textarea element, opaque process-local session token, and generation. Text mutations, composition transitions, session changes, and successful edits invalidate captured state. A replacement validates composition safety, session/generation currentness, the exact captured text, range, and `expectedText` before using the textarea's native range replacement. Success places the caret after the inserted text, invalidates the one-shot port, and emits a fresh `TextContext`. Desktop Shell v1 intentionally exposes no Accept/Replace control.
+
+The Tauri capability for the main window grants no native API permissions. There are no filesystem, shell, process, clipboard, secret-storage, or remote-network capabilities, no Tauri plugins, and no provider calls. Native Intent and Normalized remain neutral placeholders until the next desktop phase integrates AI assistance.

@@ -62,7 +62,7 @@ The planned primary product is a standalone desktop writing application over the
 - explicit application of suggestions to source text with revision checks; and
 - host-appropriate persistence of user settings and the minimum session metadata needed to restore the experience.
 
-The next desktop host initially provides its own editor, realtime unit assistance, Native Intent, Normalized output, and provider-profile/BYOK settings. Native Intent confirmation, Accept/Replace, and system-wide assistance follow later. Product Host Boundary v1 introduces only the host contracts, tests, and documentation; it creates no desktop or native runtime.
+Desktop App Shell v1 establishes the first standalone host with a Tauri 2 window, a React textarea editor, host-neutral `TextContext` capture, observable selection and composition state, and guarded edit infrastructure. Its assistance tracks intentionally remain empty placeholders: realtime analysis, provider-profile/BYOK settings, Native Intent confirmation, Accept/Replace UI, and system-wide assistance follow in later phases.
 
 ## Explicit non-goals
 
