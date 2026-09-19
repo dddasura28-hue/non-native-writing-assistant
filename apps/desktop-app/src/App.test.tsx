@@ -1,10 +1,18 @@
 /** @vitest-environment jsdom */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
+import "./styles.css";
+
+const desktopStyles = readFileSync(
+  resolve(process.cwd(), "src/styles.css"),
+  "utf8",
+);
 
 describe("desktop app shell", () => {
   let container: HTMLDivElement;
@@ -44,6 +52,16 @@ describe("desktop app shell", () => {
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  function dispatchComposition(
+    editor: HTMLTextAreaElement,
+    type: "compositionstart" | "compositionupdate" | "compositionend",
+    data: string,
+  ): void {
+    editor.dispatchEvent(
+      new CompositionEvent(type, { bubbles: true, data }),
+    );
+  }
+
   it("renders the writing editor and neutral assistance placeholders", () => {
     renderApp();
 
@@ -64,6 +82,51 @@ describe("desktop app shell", () => {
     expect(editor.value).toBe("Hello 文");
     expect(container.textContent).toContain("Caret 7");
     expect(container.textContent).toContain("Selection None");
+  });
+
+  it("uses explicit soft wrapping without changing the textarea value", () => {
+    renderApp();
+    const editor = container.querySelector("textarea")!;
+    const value = `这是中文${"uninterrupted".repeat(30)}English`;
+
+    act(() => {
+      enterText(editor, value);
+    });
+
+    expect(editor.wrap).toBe("soft");
+    expect(editor.value).toBe(value);
+    expect(editor.value).not.toContain("\n");
+  });
+
+  it("uses start alignment and mixed-language soft-wrap styles", () => {
+    renderApp();
+    const editor = container.querySelector("textarea")!;
+    const style = getComputedStyle(editor);
+
+    expect(style.textAlign).toBe("start");
+    expect(style.whiteSpace).toBe("pre-wrap");
+    expect(desktopStyles).toMatch(/overflow-wrap:\s*anywhere;/);
+    expect(style.letterSpacing).toBe("normal");
+    expect(style.wordSpacing).toBe("normal");
+  });
+
+  it("does not add whitespace when Chinese IME text commits beside English", () => {
+    renderApp();
+    const editor = container.querySelector("textarea")!;
+
+    act(() => {
+      enterText(editor, "English");
+      editor.setSelectionRange(0, 0);
+      dispatchComposition(editor, "compositionstart", "");
+      dispatchComposition(editor, "compositionupdate", "这是中文");
+      enterText(editor, "这是中文English");
+      editor.setSelectionRange(4, 4);
+      dispatchComposition(editor, "compositionend", "这是中文");
+    });
+
+    expect(editor.value).toBe("这是中文English");
+    expect(editor.value).not.toContain(" ");
+    expect(container.textContent).toContain("Composition Inactive");
   });
 
   it("does not call a provider while editing", () => {

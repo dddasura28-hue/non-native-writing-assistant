@@ -137,6 +137,7 @@ export function App() {
             id="writing-editor"
             className="writing-editor"
             value={editorText}
+            wrap="soft"
             placeholder="Start writing in your target language…"
             spellCheck="true"
             onChange={handleChange}

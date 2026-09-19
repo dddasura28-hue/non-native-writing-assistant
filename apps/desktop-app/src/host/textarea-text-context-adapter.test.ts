@@ -95,6 +95,74 @@ describe("textarea TextContext capture", () => {
     expect(captureTextareaTextContext(source).text).toBe(" after \n");
   });
 
+  it("preserves adjacent Chinese and English text without adding a space", () => {
+    const value = "这是中文English";
+
+    expect(captureTextareaTextContext(textarea(value, value.length)).text).toBe(
+      value,
+    );
+  });
+
+  it("preserves exactly one explicitly typed U+0020 at a CJK/Latin boundary", () => {
+    const value = "这是中文 English";
+    const captured = captureTextareaTextContext(
+      textarea(value, value.length),
+    ).text;
+
+    expect(captured).toBe(value);
+    expect(
+      Array.from(captured).filter((character) => character === " "),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ["English followed by Chinese", "English中文"],
+    ["a natural mixed-language sentence", "I think这个方法is useful"],
+    ["Chinese, English, and emoji", "中文😀English😀继续"],
+  ])("preserves %s exactly", (_case, value) => {
+    expect(captureTextareaTextContext(textarea(value, value.length)).text).toBe(
+      value,
+    );
+  });
+
+  it("preserves one explicitly typed trailing space", () => {
+    const value = "这是中文 ";
+
+    expect(captureTextareaTextContext(textarea(value, value.length)).text).toBe(
+      value,
+    );
+  });
+
+  it("preserves multiple explicitly typed spaces", () => {
+    const value = "这是中文   English";
+
+    expect(captureTextareaTextContext(textarea(value, value.length)).text).toBe(
+      value,
+    );
+  });
+
+  it("does not add a newline to TextContext when a long value can soft-wrap", () => {
+    const value = `这是中文${"uninterrupted".repeat(30)}English`;
+    const captured = captureTextareaTextContext(
+      textarea(value, value.length),
+    ).text;
+
+    expect(captured).toBe(value);
+    expect(captured).not.toContain("\n");
+  });
+
+  it("preserves UTF-16 cursor and selection offsets in mixed text", () => {
+    const value = "中😀English文";
+    const context = captureTextareaTextContext(
+      textarea(value, 1, 3, "forward"),
+    );
+
+    expect(context.text).toBe(value);
+    expect(context.cursorOffset).toBe(3);
+    expect(context.selection).toEqual({ start: 1, end: 3 });
+    expect(context.text.slice(1, 3)).toBe("😀");
+  });
+
   it("captures an exact active composition when current text confirms it", () => {
     const source = textarea("ab", 1);
     const tracker = new TextareaCompositionTracker();
@@ -120,16 +188,22 @@ describe("textarea TextContext capture", () => {
     expect(tracker.capture(source)).toEqual({ start: 1, end: 1, text: "" });
   });
 
-  it("returns committed no-composition state after compositionend", () => {
-    const source = textarea("文", 1);
+  it("does not add whitespace when composition commits", () => {
+    const source = textarea("English", 0);
     const tracker = new TextareaCompositionTracker();
-    tracker.start(textarea("", 0));
-    tracker.update("文");
+    tracker.start(source);
+    tracker.update("这是中文");
+    source.value = "这是中文English";
+    source.selectionStart = 4;
+    source.selectionEnd = 4;
     tracker.end();
 
-    expect(
-      captureTextareaTextContext(source, tracker.capture(source)).composition,
-    ).toBeNull();
+    expect(captureTextareaTextContext(source, tracker.capture(source))).toEqual({
+      text: "这是中文English",
+      cursorOffset: 4,
+      selection: null,
+      composition: null,
+    });
   });
 
   it("does not leak the textarea or DOM-shaped extras into TextContext", () => {
