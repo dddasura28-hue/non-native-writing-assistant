@@ -326,6 +326,25 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.normalized-variants {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+}
+
+.normalized-variant + .normalized-variant {
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.normalized-variant .track-text {
+  margin-top: 0;
+}
+
+.normalized-accept {
+  margin-top: 0.65rem;
+}
+
 .native-intent-heading {
   align-items: center;
   display: flex;

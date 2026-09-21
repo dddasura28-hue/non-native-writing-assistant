@@ -5,8 +5,11 @@ import {
   SentenceUnitAnalysisTriggerPolicy,
   SimpleWritingUnitSegmenter,
   createAnalysisContext,
+  captureAnalysisSnapshot,
+  createSelectionTextReplacement,
   createUnitAssistancePresentationModel,
   createUnitSourceFingerprint,
+  createWritingUnitTextReplacement,
   findCurrentConfirmedNativeIntent,
   selectCurrentWritingUnit,
   type AnalysisConfiguration,
@@ -14,6 +17,9 @@ import {
   type AnalysisProvider,
   type ContextSelection,
   type TextContext,
+  type TextEditPort,
+  type TextRange,
+  type TextReplacement,
   type UnitAnalysisRequestKind,
   type UnitAssistancePresentation,
   type UnitSourceFingerprint,
@@ -25,6 +31,10 @@ import {
   WritingSegment,
   asSegmentId,
   asTrackId,
+  createDependencyStamp,
+  dependencyStampMatches,
+  type DependencyStamp,
+  type DerivedTrack,
   type SegmentId,
   type TrackId,
 } from "@non-native-writing/core";
@@ -63,6 +73,24 @@ export interface DesktopAssistanceTrack {
   readonly order?: number;
 }
 
+export interface DesktopNormalizedAcceptTarget {
+  readonly kind: "unit" | "selection";
+  readonly segmentId: SegmentId;
+  readonly unitId?: string;
+  readonly sourceRevision: number;
+  readonly sourceFingerprint?: UnitSourceFingerprint;
+  readonly trackId: TrackId;
+  readonly trackRevision: number;
+  readonly dependencyStamp: DependencyStamp;
+  readonly range: TextRange;
+  readonly expectedText: string;
+}
+
+export interface DesktopNormalizedPresentation extends DesktopAssistanceTrack {
+  readonly canAccept: boolean;
+  readonly acceptTarget: DesktopNormalizedAcceptTarget | null;
+}
+
 export interface DesktopNativeIntentTarget {
   readonly kind: "unit" | "selection";
   readonly segmentId: SegmentId;
@@ -79,6 +107,7 @@ export interface DesktopNativeIntentPresentation {
 }
 
 export type DesktopNativeIntentConfirmationResult = "confirmed" | "obsolete";
+export type DesktopNormalizedAcceptResult = "accepted" | "obsolete";
 
 export interface DesktopAssistanceItem {
   readonly sourceText: string;
@@ -86,7 +115,7 @@ export interface DesktopAssistanceItem {
   readonly statusMessage: string;
   readonly nativeIntent: DesktopNativeIntentPresentation | null;
   readonly nativeIntentTracks: readonly DesktopAssistanceTrack[];
-  readonly normalizedTracks: readonly DesktopAssistanceTrack[];
+  readonly normalizedTracks: readonly DesktopNormalizedPresentation[];
 }
 
 export interface DesktopAssistancePresentation {
@@ -98,6 +127,10 @@ export interface DesktopEngineControllerOptions {
   readonly debounceMs?: number;
   readonly configuration?: AnalysisConfiguration;
   readonly configurationSource?: DesktopAnalysisConfigurationSource;
+}
+
+export interface DesktopObservationOptions {
+  readonly suppressAutomaticAnalysis?: boolean;
 }
 
 export type PresentDesktopAssistance = (
@@ -137,6 +170,9 @@ export class DesktopEngineController {
   #compositionBlocked = false;
   #configurationChanged = false;
   #lastContext: TextContext | null = null;
+  #editPort: TextEditPort | null = null;
+  #acceptBlocked = false;
+  #acceptFailureMessage: string | undefined;
   #configuration: AnalysisConfiguration;
   #disposed = false;
 
@@ -162,11 +198,22 @@ export class DesktopEngineController {
     this.#debounceMs = options.debounceMs ?? DESKTOP_ANALYSIS_DEBOUNCE_MS;
   }
 
-  observe(context: TextContext): void {
+  observe(
+    context: TextContext,
+    editPort?: TextEditPort | null,
+    options: DesktopObservationOptions = {},
+  ): void {
     if (this.#disposed) {
       return;
     }
+    if (editPort !== undefined) {
+      this.#editPort = editPort;
+    }
     this.#lastContext = context;
+    this.#acceptBlocked = false;
+    this.#acceptFailureMessage = undefined;
+    const suppressAutomaticAnalysis =
+      options.suppressAutomaticAnalysis === true;
 
     if (context.composition !== null) {
       this.#compositionBlocked = true;
@@ -264,7 +311,11 @@ export class DesktopEngineController {
     this.#configurationChanged = false;
 
     this.#presentIncremental();
-    if (activeUnit === null || trigger === "none") {
+    if (
+      suppressAutomaticAnalysis ||
+      activeUnit === null ||
+      trigger === "none"
+    ) {
       return;
     }
 
@@ -390,6 +441,27 @@ export class DesktopEngineController {
     return "confirmed";
   }
 
+  async acceptNormalized(
+    target: DesktopNormalizedAcceptTarget,
+  ): Promise<DesktopNormalizedAcceptResult> {
+    if (this.#disposed || this.#editPort === null) {
+      return this.#rejectAccept();
+    }
+
+    const replacement = this.#prepareNormalizedReplacement(target);
+    if (replacement === null) {
+      return this.#rejectAccept();
+    }
+
+    this.#cancelTimer();
+    try {
+      await this.#editPort.replace(replacement);
+      return "accepted";
+    } catch {
+      return this.#rejectAccept();
+    }
+  }
+
   dispose(): void {
     if (this.#disposed) {
       return;
@@ -399,6 +471,7 @@ export class DesktopEngineController {
     this.#cancelTimer();
     this.#unitAnalysis.clear();
     this.#cancelDirectAnalysis();
+    this.#editPort = null;
   }
 
   #activateExplicitSelection(selection: ContextSelection): boolean {
@@ -517,7 +590,9 @@ export class DesktopEngineController {
             ? null
             : presentIncrementalItem(
                 model.active,
-                this.#unitFailureMessages.get(model.active.unitId),
+                this.#acceptFailureMessage ??
+                  this.#unitFailureMessages.get(model.active.unitId),
+                (track) => this.#createUnitAcceptTarget(model.active!, track),
               ),
         recent: Object.freeze(
           model.recent.map((item) => presentIncrementalItem(item)),
@@ -573,13 +648,20 @@ export class DesktopEngineController {
               trackRevision: semanticIntent.revision,
             }),
           });
+    const normalizedTracks = tracks
+      .filter((track) => track.typeId === NORMALIZED_TRACK_TYPE_ID)
+      .map((track) =>
+        presentNormalizedTrack(track, this.#createDirectAcceptTarget(track)),
+      );
     this.#present(
       Object.freeze({
         active: Object.freeze({
           sourceText: this.#directSegment.sourceText,
           status: this.#directStatus,
           statusMessage:
-            this.#directStatusMessage ?? statusMessage(this.#directStatus),
+            this.#acceptFailureMessage ??
+            this.#directStatusMessage ??
+            statusMessage(this.#directStatus),
           nativeIntent,
           nativeIntentTracks:
             nativeIntent === null
@@ -588,11 +670,7 @@ export class DesktopEngineController {
                   id: nativeIntent.target.trackId,
                   text: nativeIntent.text,
                 })]),
-          normalizedTracks: Object.freeze(
-            tracks
-              .filter((track) => track.typeId === NORMALIZED_TRACK_TYPE_ID)
-              .map(presentDerivedTrack),
-          ),
+          normalizedTracks: Object.freeze(normalizedTracks),
         }),
         recent: Object.freeze([]),
       }),
@@ -608,6 +686,199 @@ export class DesktopEngineController {
     this.#directStatus = "idle";
     this.#directStatusMessage = undefined;
     this.#directVisibleTrackIds = EMPTY_TRACK_IDS;
+  }
+
+  #prepareNormalizedReplacement(
+    target: DesktopNormalizedAcceptTarget,
+  ): TextReplacement | null {
+    const context = this.#lastContext;
+    const selection = this.#selection;
+    if (context === null || selection === null || this.#acceptBlocked) {
+      return null;
+    }
+
+    if (target.kind === "unit") {
+      if (
+        this.#explicitSelection ||
+        target.unitId === undefined ||
+        this.#activeUnitId !== target.unitId
+      ) {
+        return null;
+      }
+      const record = this.#unitAnalysis.getRecord(target.unitId);
+      const result = this.#unitAnalysis.getCurrentResult(
+        target.unitId,
+        this.#configuration,
+      );
+      if (
+        record === null ||
+        result === null ||
+        record.segment.id !== target.segmentId ||
+        record.segment.sourceTrack.revision !== target.sourceRevision ||
+        createUnitSourceFingerprint(record.unit) !== target.sourceFingerprint ||
+        !dependencyStampMatches(result.dependencyStamp, target.dependencyStamp) ||
+        !this.#unitAnalysis
+          .getCurrentTrackIds(target.unitId, this.#configuration)
+          .includes(target.trackId)
+      ) {
+        return null;
+      }
+      const track = findNormalizedTrack(record.segment, target);
+      if (track === null) {
+        return null;
+      }
+      try {
+        const replacement = createWritingUnitTextReplacement(
+          context,
+          selection,
+          record.unit,
+          track.payload.text,
+        );
+        return replacementTargetMatches(target, replacement)
+          ? replacement
+          : null;
+      } catch {
+        return null;
+      }
+    }
+
+    if (
+      !this.#explicitSelection ||
+      this.#directSegment === null ||
+      this.#directSegment.id !== target.segmentId ||
+      this.#directSegment.sourceTrack.revision !== target.sourceRevision ||
+      this.#directStatus !== "completed" ||
+      !this.#directVisibleTrackIds.includes(target.trackId)
+    ) {
+      return null;
+    }
+    const currentStamp = captureAnalysisSnapshot(
+      this.#directSegment,
+      this.#configuration,
+      createAnalysisContext(selection),
+    ).dependencyStamp;
+    if (!dependencyStampMatches(currentStamp, target.dependencyStamp)) {
+      return null;
+    }
+    const track = findNormalizedTrack(this.#directSegment, target);
+    if (track === null) {
+      return null;
+    }
+    try {
+      const replacement = createSelectionTextReplacement(
+        context,
+        selection,
+        track.payload.text,
+      );
+      return replacementTargetMatches(target, replacement)
+        ? replacement
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #createUnitAcceptTarget(
+    item: UnitAssistancePresentation,
+    track: DesktopAssistanceTrack,
+  ): DesktopNormalizedAcceptTarget | null {
+    if (
+      this.#editPort === null ||
+      this.#acceptBlocked ||
+      this.#lastContext === null ||
+      this.#selection === null
+    ) {
+      return null;
+    }
+    const record = this.#unitAnalysis.getRecord(item.unitId);
+    const result = this.#unitAnalysis.getCurrentResult(
+      item.unitId,
+      this.#configuration,
+    );
+    if (record === null || result === null) {
+      return null;
+    }
+    const derived = record.segment
+      .listDerivedTracks()
+      .find((candidate) => candidate.id === track.id);
+    if (!isNormalizedTextTrack(derived)) {
+      return null;
+    }
+    try {
+      const replacement = createWritingUnitTextReplacement(
+        this.#lastContext,
+        this.#selection,
+        record.unit,
+        derived.payload.text,
+      );
+      return createAcceptTarget({
+        kind: "unit",
+        unitId: item.unitId,
+        segmentId: item.segmentId,
+        sourceRevision: item.sourceRevision,
+        sourceFingerprint: createUnitSourceFingerprint(record.unit),
+        track: derived,
+        dependencyStamp: result.dependencyStamp,
+        replacement,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  #createDirectAcceptTarget(
+    track: DerivedTrack<{ readonly text: string }>,
+  ): DesktopNormalizedAcceptTarget | null {
+    if (
+      this.#editPort === null ||
+      this.#acceptBlocked ||
+      this.#lastContext === null ||
+      this.#selection === null ||
+      this.#directSegment === null ||
+      this.#directStatus !== "completed"
+    ) {
+      return null;
+    }
+    const currentStamp = captureAnalysisSnapshot(
+      this.#directSegment,
+      this.#configuration,
+      createAnalysisContext(this.#selection),
+    ).dependencyStamp;
+    if (!dependencyStampMatches(track.dependencyStamp, currentStamp)) {
+      return null;
+    }
+    try {
+      const replacement = createSelectionTextReplacement(
+        this.#lastContext,
+        this.#selection,
+        track.payload.text,
+      );
+      return createAcceptTarget({
+        kind: "selection",
+        segmentId: this.#directSegment.id,
+        sourceRevision: this.#directSegment.sourceTrack.revision,
+        track,
+        dependencyStamp: currentStamp,
+        replacement,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  #rejectAccept(): DesktopNormalizedAcceptResult {
+    if (this.#disposed || this.#acceptBlocked) {
+      return "obsolete";
+    }
+    this.#acceptBlocked = true;
+    this.#acceptFailureMessage =
+      "Source changed; suggestion is no longer current.";
+    if (this.#explicitSelection) {
+      this.#presentDirect();
+    } else {
+      this.#presentIncremental();
+    }
+    return "obsolete";
   }
 
   #cancelDirectAnalysis(): void {
@@ -667,6 +938,9 @@ export class DesktopEngineController {
 function presentIncrementalItem(
   item: UnitAssistancePresentation,
   failureMessage?: string,
+  createNormalizedAcceptTarget?: (
+    track: DesktopAssistanceTrack,
+  ) => DesktopNormalizedAcceptTarget | null,
 ): DesktopAssistanceItem {
   const status: DesktopAnalysisStatus =
     item.status === "completed"
@@ -698,7 +972,14 @@ function presentIncrementalItem(
     nativeIntentTracks: Object.freeze(
       item.nativeIntentTracks.map(presentTrack),
     ),
-    normalizedTracks: Object.freeze(item.normalizedTracks.map(presentTrack)),
+    normalizedTracks: Object.freeze(
+      item.normalizedTracks.map((track) =>
+        presentNormalizedTrack(
+          track,
+          createNormalizedAcceptTarget?.(track) ?? null,
+        ),
+      ),
+    ),
   });
 }
 
@@ -731,18 +1012,81 @@ function presentTrack(track: DesktopAssistanceTrack): DesktopAssistanceTrack {
   return Object.freeze({ ...track });
 }
 
-function presentDerivedTrack(track: {
-  readonly id: TrackId;
-  readonly payload: { readonly text: string };
-  readonly label?: string;
-  readonly order?: number;
-}): DesktopAssistanceTrack {
+function presentNormalizedTrack(
+  track: DesktopAssistanceTrack | DerivedTrack<{ readonly text: string }>,
+  acceptTarget: DesktopNormalizedAcceptTarget | null,
+): DesktopNormalizedPresentation {
+  const text = "payload" in track ? track.payload.text : track.text;
   return Object.freeze({
     id: track.id,
-    text: track.payload.text,
+    text,
     label: track.label,
     order: track.order,
+    canAccept: acceptTarget !== null,
+    acceptTarget,
   });
+}
+
+function createAcceptTarget(input: {
+  readonly kind: "unit" | "selection";
+  readonly unitId?: string;
+  readonly segmentId: SegmentId;
+  readonly sourceRevision: number;
+  readonly sourceFingerprint?: UnitSourceFingerprint;
+  readonly track: DerivedTrack<{ readonly text: string }>;
+  readonly dependencyStamp: DependencyStamp;
+  readonly replacement: TextReplacement;
+}): DesktopNormalizedAcceptTarget {
+  return Object.freeze({
+    kind: input.kind,
+    unitId: input.unitId,
+    segmentId: input.segmentId,
+    sourceRevision: input.sourceRevision,
+    sourceFingerprint: input.sourceFingerprint,
+    trackId: input.track.id,
+    trackRevision: input.track.revision,
+    dependencyStamp: createDependencyStamp(input.dependencyStamp),
+    range: Object.freeze({ ...input.replacement.range }),
+    expectedText: input.replacement.expectedText,
+  });
+}
+
+function findNormalizedTrack(
+  segment: WritingSegment,
+  target: DesktopNormalizedAcceptTarget,
+): DerivedTrack<{ readonly text: string }> | null {
+  const track = segment
+    .listDerivedTracks()
+    .find((candidate) => candidate.id === target.trackId);
+  return isNormalizedTextTrack(track) &&
+    track.revision === target.trackRevision &&
+    dependencyStampMatches(track.dependencyStamp, target.dependencyStamp)
+    ? track
+    : null;
+}
+
+function isNormalizedTextTrack(
+  track: DerivedTrack<unknown> | undefined,
+): track is DerivedTrack<{ readonly text: string }> {
+  return (
+    track !== undefined &&
+    track.typeId === NORMALIZED_TRACK_TYPE_ID &&
+    typeof track.payload === "object" &&
+    track.payload !== null &&
+    "text" in track.payload &&
+    typeof track.payload.text === "string"
+  );
+}
+
+function replacementTargetMatches(
+  target: DesktopNormalizedAcceptTarget,
+  replacement: TextReplacement,
+): boolean {
+  return (
+    target.range.start === replacement.range.start &&
+    target.range.end === replacement.range.end &&
+    target.expectedText === replacement.expectedText
+  );
 }
 
 function statusMessage(status: DesktopAnalysisStatus): string {

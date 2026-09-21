@@ -2,7 +2,10 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { TextContext } from "@non-native-writing/application";
+import type {
+  TextContext,
+  TextEditPort,
+} from "@non-native-writing/application";
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +20,8 @@ import type {
   DesktopAssistancePresentation,
   DesktopNativeIntentPresentation,
   DesktopNativeIntentTarget,
+  DesktopNormalizedAcceptTarget,
+  DesktopNormalizedPresentation,
   PresentDesktopAssistance,
 } from "./controller/desktop-engine-controller.js";
 import type { DesktopProviderSettingsView } from "./settings/desktop-settings-controller.js";
@@ -39,6 +44,20 @@ function item(
   });
 }
 
+function normalized(
+  id: string,
+  text: string,
+  options: Partial<DesktopNormalizedPresentation> = {},
+): DesktopNormalizedPresentation {
+  return Object.freeze({
+    id: id as never,
+    text,
+    canAccept: false,
+    acceptTarget: null,
+    ...options,
+  });
+}
+
 const COMPLETED_PRESENTATION: DesktopAssistancePresentation = Object.freeze({
   active: item("原文\nsource", {
     nativeIntentTracks: Object.freeze([
@@ -48,10 +67,7 @@ const COMPLETED_PRESENTATION: DesktopAssistancePresentation = Object.freeze({
       }),
     ]),
     normalizedTracks: Object.freeze([
-      Object.freeze({
-        id: "normalized" as never,
-        text: "Normalized first\n规范第二行",
-      }),
+      normalized("normalized", "Normalized first\n规范第二行"),
     ]),
   }),
   recent: Object.freeze([
@@ -60,7 +76,7 @@ const COMPLETED_PRESENTATION: DesktopAssistancePresentation = Object.freeze({
         Object.freeze({ id: "recent-native" as never, text: "Earlier intent" }),
       ]),
       normalizedTracks: Object.freeze([
-        Object.freeze({ id: "recent-normalized" as never, text: "Earlier normalized" }),
+        normalized("recent-normalized", "Earlier normalized"),
       ]),
     }),
   ]),
@@ -68,10 +84,12 @@ const COMPLETED_PRESENTATION: DesktopAssistancePresentation = Object.freeze({
 
 class StubController implements DesktopControllerPort {
   readonly observed: TextContext[] = [];
+  editPort: TextEditPort | null = null;
   readonly present: PresentDesktopAssistance;
   readonly onObserve?: (context: TextContext) => void;
   disposed = false;
   confirmationResult: "confirmed" | "obsolete" = "confirmed";
+  acceptReplacementText: string | null = null;
   readonly actions: Array<{ name: string; args: readonly unknown[] }> = [];
 
   constructor(
@@ -82,8 +100,11 @@ class StubController implements DesktopControllerPort {
     this.onObserve = onObserve;
   }
 
-  observe(context: TextContext): void {
+  observe(context: TextContext, editPort?: TextEditPort | null): void {
     this.observed.push(context);
+    if (editPort !== undefined) {
+      this.editPort = editPort;
+    }
     this.onObserve?.(context);
   }
 
@@ -93,6 +114,20 @@ class StubController implements DesktopControllerPort {
   ): "confirmed" | "obsolete" {
     this.actions.push({ name: "confirmNativeIntent", args: [target, text] });
     return this.confirmationResult;
+  }
+
+  async acceptNormalized(
+    target: DesktopNormalizedAcceptTarget,
+  ): Promise<"accepted" | "obsolete"> {
+    this.actions.push({ name: "acceptNormalized", args: [target] });
+    if (this.acceptReplacementText !== null && this.editPort !== null) {
+      await this.editPort.replace({
+        range: target.range,
+        expectedText: target.expectedText,
+        replacementText: this.acceptReplacementText,
+      });
+    }
+    return "accepted";
   }
 
   async addProfile(providerId: string): Promise<void> {
@@ -193,6 +228,157 @@ describe("desktop engine UI", () => {
     renderWithPresentation(COMPLETED_PRESENTATION);
     expect(container.textContent).toContain("Normalized first");
     expect(container.textContent).toContain("规范第二行");
+  });
+
+  it("shows an accessible Accept control for each current Normalized variant", () => {
+    const firstTarget = normalizedAcceptTarget({
+      trackId: "normalized-first" as never,
+    });
+    const secondTarget = normalizedAcceptTarget({
+      trackId: "normalized-second" as never,
+    });
+    const instance = renderWithPresentation({
+      active: item("Old.", {
+        normalizedTracks: Object.freeze([
+          normalized("normalized-first", "First wording.", {
+            label: "Concise",
+            canAccept: true,
+            acceptTarget: firstTarget,
+          }),
+          normalized("normalized-second", "Second wording.", {
+            label: "Natural",
+            canAccept: true,
+            acceptTarget: secondTarget,
+          }),
+        ]),
+      }),
+      recent: [],
+    });
+
+    const acceptButtons = [
+      ...container.querySelectorAll<HTMLButtonElement>(".normalized-accept"),
+    ];
+    expect(acceptButtons.map((candidate) => candidate.getAttribute("aria-label")))
+      .toEqual([
+        "Accept Normalized variant Concise",
+        "Accept Normalized variant Natural",
+      ]);
+    expect(acceptButtons.every((candidate) => !candidate.disabled)).toBe(true);
+
+    act(() => acceptButtons[1]!.click());
+    expect(instance.actions).toContainEqual({
+      name: "acceptNormalized",
+      args: [secondTarget],
+    });
+  });
+
+  it("does not expose an enabled Accept control for stale wording", () => {
+    renderWithPresentation({
+      active: item("Current source", {
+        normalizedTracks: Object.freeze([
+          normalized("stale-normalized", "Old wording"),
+        ]),
+      }),
+      recent: [],
+    });
+
+    expect(
+      container.querySelector<HTMLButtonElement>(".normalized-accept")?.disabled,
+    ).toBe(true);
+  });
+
+  it("applies Accept through the captured edit port and synchronizes the textarea", async () => {
+    let instance!: StubController;
+    const target = normalizedAcceptTarget();
+    const factory: DesktopControllerFactory = (present) => {
+      instance = new StubController(present, (observed) => {
+        if (observed.text === "New\n新.") {
+          present({ active: item(observed.text), recent: [] });
+        }
+      });
+      instance.acceptReplacementText = "New\n新.";
+      return instance;
+    };
+    renderApp(factory);
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    act(() => enterText(editor, "Old."));
+    act(() => instance.present({
+      active: item("Old.", {
+        nativeIntent: nativeIntent("Transient draft"),
+        normalizedTracks: Object.freeze([
+          normalized("normalized-one", "New\n新.", {
+            canAccept: true,
+            acceptTarget: target,
+          }),
+        ]),
+      }),
+      recent: [],
+    }));
+
+    await act(async () => {
+      button("Accept")?.click();
+      await Promise.resolve();
+    });
+
+    expect(editor.value).toBe("New\n新.");
+    expect(editor.selectionStart).toBe("New\n新.".length);
+    expect(editor.selectionEnd).toBe("New\n新.".length);
+    expect(instance.observed.at(-1)?.text).toBe("New\n新.");
+    expect(container.querySelector('[aria-label="Native Intent draft"]')).toBeNull();
+  });
+
+  it("replaces only an explicit selected source range", async () => {
+    let instance!: StubController;
+    const source = "AA Old. ZZ";
+    const target = normalizedAcceptTarget({
+      kind: "selection",
+      unitId: undefined,
+      range: Object.freeze({ start: 3, end: 7 }),
+    });
+    renderApp((present) => {
+      instance = new StubController(present);
+      instance.acceptReplacementText = "New text.";
+      return instance;
+    });
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    act(() => enterText(editor, source));
+    act(() => {
+      editor.setSelectionRange(3, 7);
+      editor.dispatchEvent(new Event("select", { bubbles: true }));
+      instance.present({
+        active: item("Old.", {
+          normalizedTracks: Object.freeze([
+            normalized("normalized-one", "New text.", {
+              canAccept: true,
+              acceptTarget: target,
+            }),
+          ]),
+        }),
+        recent: [],
+      });
+    });
+
+    await act(async () => {
+      button("Accept")?.click();
+      await Promise.resolve();
+    });
+
+    expect(editor.value).toBe("AA New text. ZZ");
+    expect(editor.selectionStart).toBe(3 + "New text.".length);
+    expect(editor.selectionEnd).toBe(editor.selectionStart);
+  });
+
+  it("renders the compact stale-edit failure status", () => {
+    renderWithPresentation({
+      active: item("Current source", {
+        status: "idle",
+        statusMessage: "Source changed; suggestion is no longer current.",
+      }),
+      recent: [],
+    });
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "Source changed; suggestion is no longer current.",
+    );
   });
 
   it("renders recent assistance separately from the active unit", () => {
@@ -396,10 +582,17 @@ describe("desktop engine UI", () => {
         nativeIntentTracks: Object.freeze([
           Object.freeze({ id: "recent" as never, text: "Recent confirmed" }),
         ]),
+        normalizedTracks: Object.freeze([
+          normalized("recent-normalized", "Recent wording", {
+            canAccept: true,
+            acceptTarget: normalizedAcceptTarget(),
+          }),
+        ]),
       })],
     });
     const recent = container.querySelector(".recent-assistance")!;
     expect(recent.textContent).toContain("Recent confirmed");
+    expect(recent.textContent).toContain("Recent wording");
     expect(recent.querySelector("textarea")).toBeNull();
     expect([...recent.querySelectorAll("button")]).toHaveLength(0);
   });
@@ -640,6 +833,31 @@ function nativeIntent(
       trackId: (overrides.trackId ?? "native-one") as never,
       trackRevision: overrides.trackRevision ?? (state === "confirmed" ? 2 : 1),
     }),
+  });
+}
+
+function normalizedAcceptTarget(
+  overrides: Partial<DesktopNormalizedAcceptTarget> = {},
+): DesktopNormalizedAcceptTarget {
+  return Object.freeze({
+    kind: "unit" as const,
+    segmentId: "segment-one" as never,
+    unitId: "unit-one",
+    sourceRevision: 1,
+    sourceFingerprint: "unit-one:source" as never,
+    trackId: "normalized-one" as never,
+    trackRevision: 1,
+    dependencyStamp: Object.freeze({
+      sourceRevision: 1,
+      assistPolicyFingerprint: "assist",
+      styleProfileFingerprint: "style",
+      languageConfigurationFingerprint: "languages",
+      processorConfigurationFingerprint: "processor",
+      contextFingerprint: "context",
+    }),
+    range: Object.freeze({ start: 0, end: 4 }),
+    expectedText: "Old.",
+    ...overrides,
   });
 }
 

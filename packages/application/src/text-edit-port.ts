@@ -1,6 +1,11 @@
 import { createSegmentRange } from "@non-native-writing/core";
 
 import type { TextContext, TextRange } from "./text-context.js";
+import {
+  assertContextSelectionMapsToText,
+  type ContextSelection,
+} from "./context-selector.js";
+import type { WritingUnit } from "./writing-unit.js";
 
 /** Exact replacement data relative to the captured TextContext.text. */
 export interface TextReplacement {
@@ -13,7 +18,7 @@ export interface TextReplacement {
 /**
  * A port instance is bound by the host to ONE captured session, revision and
  * available-text coordinate window. It must never retarget the active editor.
- * Only a future explicit user apply action may invoke it, after checking the
+ * Only an explicit user apply action may invoke it, after checking the
  * result's existing DependencyStamp/source fingerprint for currentness.
  *
  * The host must atomically check that the captured session is still available,
@@ -21,7 +26,7 @@ export interface TextReplacement {
  * current slice equals expectedText, then perform its normal undoable edit.
  * Reject by throwing/rejecting without mutation if any check fails or cannot
  * be guaranteed. Async hosts must check at commit, not only before awaiting.
- * A successful edit invalidates this captured port. No runtime adapter yet.
+ * A successful edit invalidates this captured port.
  */
 export interface TextEditPort {
   replace(replacement: TextReplacement): Promise<void> | void;
@@ -38,6 +43,43 @@ export function createTextReplacement(
   });
   assertTextReplacementMatches(context.text, replacement);
   return replacement;
+}
+
+export function createWritingUnitTextReplacement(
+  context: TextContext,
+  selection: ContextSelection,
+  unit: WritingUnit,
+  replacementText: string,
+): TextReplacement {
+  assertContextSelectionMapsToText(context, selection);
+  if (
+    unit.range.end > selection.activeText.length ||
+    selection.activeText.slice(unit.range.start, unit.range.end) !== unit.text
+  ) {
+    throw new TypeError("WritingUnit must map exactly to selection.activeText.");
+  }
+
+  return createTextReplacement(context, {
+    range: {
+      start: selection.sourceRange.start + unit.range.start,
+      end: selection.sourceRange.start + unit.range.end,
+    },
+    expectedText: unit.text,
+    replacementText,
+  });
+}
+
+export function createSelectionTextReplacement(
+  context: TextContext,
+  selection: ContextSelection,
+  replacementText: string,
+): TextReplacement {
+  assertContextSelectionMapsToText(context, selection);
+  return createTextReplacement(context, {
+    range: selection.sourceRange,
+    expectedText: selection.activeText,
+    replacementText,
+  });
 }
 
 /** Pure text guard only; session/revision/composition checks remain host-owned. */

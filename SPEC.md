@@ -62,7 +62,7 @@ The planned primary product is a standalone desktop writing application over the
 - explicit application of suggestions to source text with revision checks; and
 - host-appropriate persistence of user settings and the minimum session metadata needed to restore the experience.
 
-Desktop App Shell v1 establishes the first standalone host with a Tauri 2 window, a React textarea editor, host-neutral `TextContext` capture, observable selection and composition state, and guarded edit infrastructure. Desktop Engine Integration v1 adds cursor-local automatic assistance through the existing selectors, writing-unit segmentation, trigger policy, incremental coordinator, analysis coordinator, and provider boundary. Desktop BYOK & Secret Storage v1 makes the existing OpenAI, Anthropic, Gemini, and OpenAI-compatible adapters the production desktop path. Provider metadata and active selection persist separately from credentials; the native host stores secrets in the operating system credential store and performs adapter-built HTTP requests. A missing configuration never blocks source editing or produces fake output. Native Intent Confirmation v1 adds an active-target editor and explicit confirmation checkpoint. Accept/Replace UI and system-wide assistance follow in later phases.
+Desktop App Shell v1 establishes the first standalone host with a Tauri 2 window, a React textarea editor, host-neutral `TextContext` capture, observable selection and composition state, and guarded edit infrastructure. Desktop Engine Integration v1 adds cursor-local automatic assistance through the existing selectors, writing-unit segmentation, trigger policy, incremental coordinator, analysis coordinator, and provider boundary. Desktop BYOK & Secret Storage v1 makes the existing OpenAI, Anthropic, Gemini, and OpenAI-compatible adapters the production desktop path. Provider metadata and active selection persist separately from credentials; the native host stores secrets in the operating system credential store and performs adapter-built HTTP requests. A missing configuration never blocks source editing or produces fake output. Native Intent Confirmation v1 adds an active-target editor and explicit confirmation checkpoint. Accept / Replace v1 lets the user apply a current Normalized variant to its exact source target through the guarded desktop edit boundary. System-wide assistance remains a later phase.
 
 ### Desktop Native Intent confirmation
 
@@ -71,6 +71,16 @@ The active assistance item presents Native Intent in one of two states. An infer
 The editable draft is transient React state bound to the current segment, unit or selection, source revision, and intent track revision. It is discarded when the active semantic target changes and is never written to settings, browser storage, the filesystem, credential storage, or history. Reset Draft restores the current inferred or confirmed semantic value without changing domain state or calling a provider. Recent Assistance remains read-only.
 
 A source mutation invalidates confirmation without fuzzy migration. A context-only, provider, or model change leaves a source-current confirmed intent intact while making older generated output dependency-stale; regeneration uses the current dependencies plus the same confirmed text. Provider failure after confirmation does not undo the confirmation. Clearing an existing confirmation is deferred to a separate future action and is not part of Reset Draft.
+
+### Desktop Accept / Replace
+
+Normalized output remains advisory until the user explicitly chooses Accept on a current variant. Accept means replacing exactly the source target that produced that variant. For cursor-local assistance, the target is one current `WritingUnit`; its range is mapped from `ContextSelection.activeText` into the captured host text by adding `ContextSelection.sourceRange.start`. For a non-empty explicit selection, the whole exact selection is the target even when it contains multiple sentences.
+
+An Accept control is enabled only while source identity and the complete analysis dependency stamp remain current. The prepared action binds the desktop session's active analysis target, source revision and fingerprint, Normalized track identity and revision, dependency stamp, absolute UTF-16 half-open range, and exact expected source text. Provider, model, style, policy, context, confirmed-intent, or source changes make incompatible output stale. Unit identity alone is never sufficient.
+
+The desktop controller constructs the existing `TextReplacement { range, expectedText, replacementText }`; React neither calculates offsets nor writes the editor. The captured `TextEditPort` performs the final session, generation, composition, captured-text, range, and exact-slice checks immediately before mutation. Failure leaves Source unchanged and reports a compact stale-source status. There is no fuzzy relocation, merge, whole-document fallback, trimming, newline conversion, or whitespace normalization.
+
+Success replaces only that guarded range, preserves all surrounding text, collapses the selection at the end of the exact inserted variant, consumes the captured edit port, and recaptures a fresh `TextContext`. The accepted text becomes a new Source revision, so old results, confirmed Native Intent, and the old target's transient intent draft no longer apply. The recapture caused by the successful host edit suppresses only its one automatic analysis opportunity; the next genuine user edit resumes realtime analysis, and an explicit manual analysis remains available. Each current Normalized variant has its own Accept action. Recent Assistance remains read-only in v1.
 
 ### Desktop provider configuration
 
@@ -115,8 +125,8 @@ An optional track proposing a grammatical, natural target-language rendering of 
 **Suggestion**  
 A proposed change or expression that has not modified source text.
 
-**Apply**  
-An explicit user command that requests a suggestion be written to a specified source range after a revision check.
+**Accept / Apply**
+An explicit user command that requests one selected, current suggestion be written to its exact source range after source, dependency, and host-session checks.
 
 **Assistance strength**  
 A user-facing choice that selects an assistance policy. It is not itself a collection of scattered numeric thresholds.

@@ -1,10 +1,13 @@
 import {
+  assertTextReplacementMatches,
   createTextContext,
   type AnalysisConfiguration,
   type AnalysisProposal,
   type AnalysisProvider,
   type AnalysisSnapshot,
   type TextContext,
+  type TextEditPort,
+  type TextReplacement,
 } from "@non-native-writing/application";
 import {
   NATIVE_INTENT_TRACK_TYPE_ID,
@@ -81,7 +84,12 @@ class ControlledProvider implements AnalysisProvider {
     });
   }
 
-  complete(index: number): void {
+  complete(
+    index: number,
+    normalizedTexts: readonly string[] = [
+      `normalized:${this.requests[index]!.snapshot.sourceText}`,
+    ],
+  ): void {
     const request = this.requests[index]!;
     const suffix = `${index}-${request.snapshot.sourceRevision}`;
     const generationGroupId = asGenerationGroupId(`test-generation-${suffix}`);
@@ -97,15 +105,16 @@ class ControlledProvider implements AnalysisProvider {
             generationGroupId,
             order: 1,
           }),
-          Object.freeze({
-            id: asTrackId(`test-normalized-${suffix}`),
+          ...normalizedTexts.map((text, variantIndex) => Object.freeze({
+            id: asTrackId(`test-normalized-${suffix}-${variantIndex}`),
             typeId: NORMALIZED_TRACK_TYPE_ID,
-            text: `normalized:${request.snapshot.sourceText}`,
+            text,
+            label: `Variant ${variantIndex + 1}`,
             provenance: "model" as const,
             dependencyStamp: request.snapshot.dependencyStamp,
             generationGroupId,
-            order: 1,
-          }),
+            order: variantIndex + 1,
+          })),
         ]),
       }),
     );
@@ -113,6 +122,65 @@ class ControlledProvider implements AnalysisProvider {
 
   fail(index: number): void {
     this.requests[index]!.reject(new Error("controlled failure"));
+  }
+}
+
+class ControllerTextHost {
+  current: TextContext;
+  generation = 0;
+  replaceCount = 0;
+  lastReplacement: TextReplacement | null = null;
+
+  constructor(
+    private readonly controller: DesktopEngineController,
+    initial: TextContext,
+  ) {
+    this.current = initial;
+    this.publish();
+  }
+
+  edit(next: TextContext): void {
+    this.generation += 1;
+    this.current = next;
+    this.publish();
+  }
+
+  invalidateSession(): void {
+    this.generation += 1;
+  }
+
+  private publish(suppressAutomaticAnalysis = false): void {
+    this.controller.observe(this.current, this.capturePort(this.current), {
+      suppressAutomaticAnalysis,
+    });
+  }
+
+  private capturePort(captured: TextContext): TextEditPort {
+    const capturedGeneration = this.generation;
+    let consumed = false;
+    return {
+      replace: (replacement) => {
+        if (consumed || capturedGeneration !== this.generation) {
+          throw new Error("Captured editor session is no longer current.");
+        }
+        if (this.current.text !== captured.text) {
+          throw new Error("Captured editor session is no longer current.");
+        }
+        assertTextReplacementMatches(this.current.text, replacement);
+        consumed = true;
+        this.replaceCount += 1;
+        this.lastReplacement = replacement;
+        const text =
+          this.current.text.slice(0, replacement.range.start) +
+          replacement.replacementText +
+          this.current.text.slice(replacement.range.end);
+        const cursorOffset =
+          replacement.range.start + replacement.replacementText.length;
+        this.generation += 1;
+        this.current = context(text, cursorOffset);
+        this.publish(true);
+      },
+    };
   }
 }
 
@@ -710,5 +778,234 @@ describe("DesktopEngineController", () => {
     expect(latest().active?.normalizedTracks).toEqual([]);
     expect(provider.requests[2]!.snapshot.beforeContext).toBe("BB");
     expect(provider.requests[2]!.snapshot.confirmedNativeIntent?.text).toBe("整段选择的含义");
+  });
+
+  it("accepts the exact cursor-local unit and preserves surrounding text", async () => {
+    const source = "Before. This method have problem. After.";
+    const host = new ControllerTextHost(
+      controller,
+      context(source, source.indexOf("method")),
+    );
+    expect(provider.requests[0]?.snapshot.sourceText).toBe(
+      "This method have problem.",
+    );
+    provider.complete(0, ["This method has a problem."]);
+    await flush();
+
+    const variant = latest().active!.normalizedTracks[0]!;
+    expect(variant.canAccept).toBe(true);
+    expect(variant.acceptTarget?.range).toEqual({ start: 8, end: 33 });
+    await expect(
+      controller.acceptNormalized(variant.acceptTarget!),
+    ).resolves.toBe("accepted");
+
+    expect(host.current.text).toBe("Before. This method has a problem. After.");
+    expect(host.current.cursorOffset).toBe(34);
+    expect(host.current.selection).toBeNull();
+    expect(host.lastReplacement).toMatchObject({
+      range: { start: 8, end: 33 },
+      expectedText: "This method have problem.",
+      replacementText: "This method has a problem.",
+    });
+    expect(latest().active?.normalizedTracks).toEqual([]);
+  });
+
+  it("accepts only the exact explicit multi-sentence selection", async () => {
+    const source = "AA This have issue. It cost too much. ZZ";
+    const start = source.indexOf("This");
+    const end = source.indexOf(" ZZ");
+    const host = new ControllerTextHost(
+      controller,
+      context(source, start, { selection: { start, end } }),
+    );
+    const analysis = controller.analyze(host.current);
+    provider.complete(0, ["This has an issue. It costs too much."]);
+    await expect(analysis).resolves.toMatchObject({ status: "applied" });
+    const variant = latest().active!.normalizedTracks[0]!;
+
+    await expect(
+      controller.acceptNormalized(variant.acceptTarget!),
+    ).resolves.toBe("accepted");
+
+    expect(host.current.text).toBe(
+      "AA This has an issue. It costs too much. ZZ",
+    );
+    expect(host.lastReplacement?.range).toEqual({ start, end });
+    expect(host.lastReplacement?.expectedText).toBe(
+      "This have issue. It cost too much.",
+    );
+    expect(host.current.cursorOffset).toBe(
+      start + "This has an issue. It costs too much.".length,
+    );
+    expect(host.current.selection).toBeNull();
+  });
+
+  it.each([
+    ["第一行有问题。", "第一行没有问题。"],
+    ["A😀B.", "A🙂更好B。"],
+    ["中文 English 有 problem.", "中文 English 没有 problem。"],
+    ["Line source.", "First line.\n第二行。"],
+  ])("preserves exact multilingual and multiline replacement text for %s", async (
+    source,
+    replacement,
+  ) => {
+    const host = new ControllerTextHost(controller, context(source));
+    provider.complete(0, [replacement]);
+    await flush();
+
+    const target = latest().active!.normalizedTracks[0]!.acceptTarget!;
+    await expect(controller.acceptNormalized(target)).resolves.toBe("accepted");
+
+    expect(host.current.text).toBe(replacement);
+    expect(host.current.cursorOffset).toBe(replacement.length);
+    expect(host.lastReplacement?.replacementText).toBe(replacement);
+  });
+
+  it("applies the selected normalized variant rather than another variant", async () => {
+    const host = new ControllerTextHost(controller, context("Needs work."));
+    provider.complete(0, ["First wording.", "Selected wording."]);
+    await flush();
+    const variants = latest().active!.normalizedTracks;
+
+    await controller.acceptNormalized(variants[1]!.acceptTarget!);
+
+    expect(host.current.text).toBe("Selected wording.");
+    expect(host.lastReplacement?.replacementText).toBe("Selected wording.");
+    expect(host.replaceCount).toBe(1);
+  });
+
+  it("rejects an old Accept after a source edit and presents a compact status", async () => {
+    const host = new ControllerTextHost(
+      controller,
+      context("This method have problem."),
+    );
+    provider.complete(0, ["This method has a problem."]);
+    await flush();
+    const target = latest().active!.normalizedTracks[0]!.acceptTarget!;
+
+    host.edit(context("This method have serious problem."));
+    await expect(controller.acceptNormalized(target)).resolves.toBe("obsolete");
+
+    expect(host.current.text).toBe("This method have serious problem.");
+    expect(host.replaceCount).toBe(0);
+    expect(latest().active?.statusMessage).toBe(
+      "Source changed; suggestion is no longer current.",
+    );
+    expect(latest().active?.normalizedTracks.every((track) => !track.canAccept))
+      .toBe(true);
+  });
+
+  it("rejects when the captured host session changes after validation", async () => {
+    const host = new ControllerTextHost(controller, context("Same text."));
+    provider.complete(0, ["Replacement."]);
+    await flush();
+    const target = latest().active!.normalizedTracks[0]!.acceptTarget!;
+
+    host.invalidateSession();
+    await expect(controller.acceptNormalized(target)).resolves.toBe("obsolete");
+
+    expect(host.current.text).toBe("Same text.");
+    expect(host.replaceCount).toBe(0);
+    expect(latest().active?.statusMessage).toContain("no longer current");
+  });
+
+  it("disables and rejects a result after a profile dependency change", async () => {
+    controller.dispose();
+    provider = new ControlledProvider();
+    presentations = [];
+    const configuration = new MutableConfigurationSource();
+    controller = new DesktopEngineController(
+      provider,
+      (presentation) => presentations.push(presentation),
+      { configurationSource: configuration },
+    );
+    const host = new ControllerTextHost(controller, context("Profile."));
+    provider.complete(0, ["Updated profile wording."]);
+    await flush();
+    const target = latest().active!.normalizedTracks[0]!.acceptTarget!;
+
+    configuration.switchProvider("provider:b");
+    expect(latest().active?.normalizedTracks).toEqual([]);
+    await expect(controller.acceptNormalized(target)).resolves.toBe("obsolete");
+    expect(host.current.text).toBe("Profile.");
+    expect(host.replaceCount).toBe(0);
+  });
+
+  it("accepts confirmed-intent output then clears old semantic state", async () => {
+    const host = new ControllerTextHost(controller, context("Intent source."));
+    provider.complete(0);
+    await flush();
+    controller.confirmNativeIntent(
+      latest().active!.nativeIntent!.target,
+      "用户确认的旧含义",
+    );
+    provider.complete(1, ["Confirmed intent wording."]);
+    await flush();
+    expect(latest().active?.nativeIntent?.state).toBe("confirmed");
+
+    await controller.acceptNormalized(
+      latest().active!.normalizedTracks[0]!.acceptTarget!,
+    );
+
+    expect(host.current.text).toBe("Confirmed intent wording.");
+    expect(latest().active?.nativeIntent?.state).not.toBe("confirmed");
+    expect(latest().active?.normalizedTracks).toEqual([]);
+  });
+
+  it("suppresses only the automatic request caused by Accept", async () => {
+    const host = new ControllerTextHost(controller, context("Old wording."));
+    provider.complete(0, ["Accepted wording."]);
+    await flush();
+    await controller.acceptNormalized(
+      latest().active!.normalizedTracks[0]!.acceptTarget!,
+    );
+    expect(provider.requests).toHaveLength(1);
+
+    const manual = controller.analyze(host.current);
+    expect(provider.requests).toHaveLength(2);
+    provider.complete(1);
+    await expect(manual).resolves.toMatchObject({ status: "applied" });
+
+    host.edit(context("Accepted wording. Next edit."));
+    expect(provider.requests).toHaveLength(3);
+    expect(provider.requests[2]!.snapshot.sourceText).toBe("Next edit.");
+  });
+
+  it("does not suppress a genuine edit while an asynchronous host edit is pending", async () => {
+    let rejectReplace!: (error: unknown) => void;
+    const pendingPort: TextEditPort = {
+      replace: () => new Promise<void>((_resolve, reject) => {
+        rejectReplace = reject;
+      }),
+    };
+    controller.observe(context("Old."), pendingPort);
+    provider.complete(0, ["Accepted."]);
+    await flush();
+    const pendingAccept = controller.acceptNormalized(
+      latest().active!.normalizedTracks[0]!.acceptTarget!,
+    );
+
+    controller.observe(context("User edit."), { replace: () => undefined });
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]!.snapshot.sourceText).toBe("User edit.");
+
+    rejectReplace(new Error("host race"));
+    await expect(pendingAccept).resolves.toBe("obsolete");
+  });
+
+  it("cannot apply the same prepared Accept twice or after disposal", async () => {
+    const host = new ControllerTextHost(controller, context("Once."));
+    provider.complete(0, ["Only once."]);
+    await flush();
+    const target = latest().active!.normalizedTracks[0]!.acceptTarget!;
+
+    await expect(controller.acceptNormalized(target)).resolves.toBe("accepted");
+    await expect(controller.acceptNormalized(target)).resolves.toBe("obsolete");
+    expect(host.current.text).toBe("Only once.");
+    expect(host.replaceCount).toBe(1);
+
+    controller.dispose();
+    await expect(controller.acceptNormalized(target)).resolves.toBe("obsolete");
+    expect(host.replaceCount).toBe(1);
   });
 });

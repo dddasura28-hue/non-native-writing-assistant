@@ -1,11 +1,17 @@
-import type { TextContext } from "@non-native-writing/application";
+import type {
+  TextContext,
+  TextEditPort,
+} from "@non-native-writing/application";
 import { createBuiltInProviderRegistry } from "@non-native-writing/model-integration";
 
 import {
   DESKTOP_ANALYSIS_CONFIGURATION,
   DesktopEngineController,
+  type DesktopNormalizedAcceptResult,
+  type DesktopNormalizedAcceptTarget,
   type DesktopNativeIntentConfirmationResult,
   type DesktopNativeIntentTarget,
+  type DesktopObservationOptions,
   type PresentDesktopAssistance,
 } from "./desktop-engine-controller.js";
 import { DesktopHttpTransport } from "../native/desktop-http-transport.js";
@@ -24,11 +30,18 @@ import {
 } from "../settings/desktop-settings-controller.js";
 
 export interface DesktopControllerPort extends DesktopProviderSettingsPort {
-  observe(context: TextContext): void;
+  observe(
+    context: TextContext,
+    editPort?: TextEditPort | null,
+    options?: DesktopObservationOptions,
+  ): void;
   confirmNativeIntent(
     target: DesktopNativeIntentTarget,
     text: string,
   ): DesktopNativeIntentConfirmationResult;
+  acceptNormalized(
+    target: DesktopNormalizedAcceptTarget,
+  ): Promise<DesktopNormalizedAcceptResult>;
   dispose(): void;
 }
 
@@ -53,6 +66,8 @@ export const createDesktopController: DesktopControllerFactory = (
   );
   let writing: DesktopEngineController | null = null;
   let pendingContext: TextContext | null = null;
+  let pendingEditPort: TextEditPort | null = null;
+  let pendingObservationOptions: DesktopObservationOptions | undefined;
   let disposed = false;
 
   void settings.initialize().then(() => {
@@ -72,21 +87,31 @@ export const createDesktopController: DesktopControllerFactory = (
       ),
     });
     if (pendingContext !== null) {
-      writing.observe(pendingContext);
+      writing.observe(
+        pendingContext,
+        pendingEditPort,
+        pendingObservationOptions,
+      );
       pendingContext = null;
+      pendingEditPort = null;
+      pendingObservationOptions = undefined;
     }
   });
 
   return {
-    observe: (context) => {
+    observe: (context, editPort, options) => {
       if (writing === null) {
         pendingContext = context;
+        pendingEditPort = editPort ?? null;
+        pendingObservationOptions = options;
       } else {
-        writing.observe(context);
+        writing.observe(context, editPort, options);
       }
     },
     confirmNativeIntent: (target, text) =>
       writing?.confirmNativeIntent(target, text) ?? "obsolete",
+    acceptNormalized: (target) =>
+      writing?.acceptNormalized(target) ?? Promise.resolve("obsolete"),
     addProfile: (providerId) => settings.addProfile(providerId),
     updateProfile: (profileId, patch) =>
       settings.updateProfile(profileId, patch),
@@ -98,6 +123,8 @@ export const createDesktopController: DesktopControllerFactory = (
     dispose: () => {
       disposed = true;
       pendingContext = null;
+      pendingEditPort = null;
+      pendingObservationOptions = undefined;
       settings.dispose();
       writing?.dispose();
     },

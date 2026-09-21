@@ -22,6 +22,8 @@ import {
   type DesktopAssistancePresentation,
   type DesktopNativeIntentPresentation,
   type DesktopNativeIntentTarget,
+  type DesktopNormalizedAcceptTarget,
+  type DesktopNormalizedPresentation,
 } from "./controller/desktop-engine-controller.js";
 import {
   createDesktopController,
@@ -88,26 +90,34 @@ export function App({ createController = createDesktopController }: AppProps) {
         generation.current += 1;
       }
 
-      const context = captureTextareaTextContext(
-        textarea,
-        composition.current.capture(textarea),
-      );
-      const capturedSession = currentSession();
+      const publish = (
+        context: TextContext,
+        suppressAutomaticAnalysis = false,
+      ): void => {
+        const editPort = createCapturedTextareaEditPort({
+          target: textarea,
+          context,
+          session: currentSession(),
+          getCurrentSession: currentSession,
+          onDidReplace: (freshContext) => {
+            generation.current += 1;
+            setEditorText(freshContext.text);
+            publish(freshContext, true);
+          },
+        });
+        capturedEditPort.current = editPort;
+        setTextContext(context);
+        controller.current?.observe(context, editPort, {
+          suppressAutomaticAnalysis,
+        });
+      };
 
-      capturedEditPort.current = createCapturedTextareaEditPort({
-        target: textarea,
-        context,
-        session: capturedSession,
-        getCurrentSession: currentSession,
-        onDidReplace: (freshContext) => {
-          generation.current += 1;
-          setEditorText(freshContext.text);
-          setTextContext(freshContext);
-          controller.current?.observe(freshContext);
-        },
-      });
-      setTextContext(context);
-      controller.current?.observe(context);
+      publish(
+        captureTextareaTextContext(
+          textarea,
+          composition.current.capture(textarea),
+        ),
+      );
     },
     [currentSession],
   );
@@ -547,10 +557,17 @@ function AssistanceItem({
           values={item.nativeIntentTracks.map((track) => track.text)}
         />
       )}
-      <TrackSection
-        heading="Normalized"
-        values={item.normalizedTracks.map((track) => track.text)}
-      />
+      {active ? (
+        <NormalizedSection
+          variants={item.normalizedTracks}
+          controller={controller}
+        />
+      ) : (
+        <TrackSection
+          heading="Normalized"
+          values={item.normalizedTracks.map((track) => track.text)}
+        />
+      )}
     </article>
   );
 }
@@ -626,6 +643,52 @@ function nativeIntentDraftKey(intent: DesktopNativeIntentPresentation): string {
     intent.state,
     intent.state === "confirmed" ? target.trackRevision : "inferred",
   ].join(":");
+}
+
+function NormalizedSection({
+  variants,
+  controller,
+}: {
+  readonly variants: readonly DesktopNormalizedPresentation[];
+  readonly controller: DesktopControllerPort | null;
+}) {
+  return (
+    <section className="assistance-card">
+      <h3>Normalized</h3>
+      {variants.length === 0 ? (
+        <p className="track-placeholder">No analysis yet</p>
+      ) : (
+        <div className="normalized-variants">
+          {variants.map((variant, index) => (
+            <div className="normalized-variant" key={variant.id}>
+              <p className="track-text">{variant.text}</p>
+              <button
+                className="primary-button normalized-accept"
+                type="button"
+                disabled={!variant.canAccept || variant.acceptTarget === null}
+                aria-label={`Accept Normalized variant ${variant.label ?? index + 1}`}
+                onClick={() =>
+                  runAcceptAction(controller, variant.acceptTarget)
+                }
+              >
+                Accept
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function runAcceptAction(
+  controller: DesktopControllerPort | null,
+  target: DesktopNormalizedAcceptTarget | null,
+): void {
+  if (target === null) {
+    return;
+  }
+  void controller?.acceptNormalized(target).catch(() => undefined);
 }
 
 function TrackSection({

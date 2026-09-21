@@ -101,6 +101,26 @@ describe("captured textarea TextEditPort", () => {
     expect(host.target.selectionStart).toBe(4);
   });
 
+  it.each([
+    ["前文\n旧句\n后文", { start: 3, end: 5 }, "旧句", "新句\n第二行", "前文\n新句\n第二行\n后文"],
+    ["中文 old English", { start: 3, end: 6 }, "old", "新的😀", "中文 新的😀 English"],
+  ] as const)("preserves exact multiline and mixed-language text for %s", (
+    source,
+    range,
+    expectedText,
+    replacementText,
+    finalText,
+  ) => {
+    const host = harness(source);
+    host.port.replace(
+      replacement(host.context, range, expectedText, replacementText),
+    );
+
+    expect(host.target.value).toBe(finalText);
+    expect(host.target.selectionStart).toBe(range.start + replacementText.length);
+    expect(host.target.selectionEnd).toBe(host.target.selectionStart);
+  });
+
   it("supports insertion", () => {
     const host = harness("AB");
     host.port.replace(replacement(host.context, { start: 1, end: 1 }, "", "x"));

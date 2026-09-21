@@ -6,6 +6,9 @@ import {
   createHostCapabilities,
   createTextContext,
   createTextReplacement,
+  createSelectionTextReplacement,
+  createWritingUnit,
+  createWritingUnitTextReplacement,
   type TextEditPort,
 } from "../src/index.js";
 
@@ -121,5 +124,56 @@ describe("host boundary", () => {
     expect(captured).toEqual({ text: "文", cursorOffset: 1, selection: null, composition: { start: 0, end: 1, text: "文" } });
     expect(new LocalBlockContextSelector().select(captured)).toBeNull();
     expect(new LocalBlockContextSelector().select(createTextContext({ ...captured, composition: null }))?.activeText).toBe("文");
+  });
+
+  it("maps a cursor-local unit range to absolute host UTF-16 coordinates", () => {
+    const captured = createTextContext({
+      text: "前文\n\nA😀B. Next.",
+      cursorOffset: 8,
+      selection: null,
+      composition: null,
+    });
+    const selection = new LocalBlockContextSelector().select(captured)!;
+    const unit = createWritingUnit({
+      id: "unit-emoji",
+      sourceText: selection.activeText,
+      range: { start: 0, end: 5 },
+      order: 0,
+    });
+
+    const edit = createWritingUnitTextReplacement(
+      captured,
+      selection,
+      unit,
+      "甲🙂乙。",
+    );
+
+    expect(edit).toEqual({
+      range: { start: 4, end: 9 },
+      expectedText: "A😀B.",
+      replacementText: "甲🙂乙。",
+    });
+  });
+
+  it("maps an explicit multi-sentence selection without splitting it", () => {
+    const captured = createTextContext({
+      text: "Before This have issue. It cost too much. After",
+      cursorOffset: 20,
+      selection: { start: 7, end: 41 },
+      composition: null,
+    });
+    const selection = new LocalBlockContextSelector().select(captured)!;
+
+    const edit = createSelectionTextReplacement(
+      captured,
+      selection,
+      "This has an issue. It costs too much.",
+    );
+
+    expect(edit.range).toEqual({ start: 7, end: 41 });
+    expect(edit.expectedText).toBe("This have issue. It cost too much.");
+    expect(edit.replacementText).toBe(
+      "This has an issue. It costs too much.",
+    );
   });
 });
