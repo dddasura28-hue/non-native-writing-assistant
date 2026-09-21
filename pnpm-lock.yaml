@@ -20,6 +20,12 @@ importers:
       '@non-native-writing/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@non-native-writing/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@non-native-writing/model-integration':
+        specifier: workspace:*
+        version: link:../../packages/model-integration
       '@tauri-apps/api':
         specifier: 2.11.1
         version: 2.11.1

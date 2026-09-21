@@ -35,6 +35,8 @@ body {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -52,6 +54,135 @@ textarea {
   padding: 1.1rem 1.5rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.configuration-badge {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.header-actions,
+.button-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button {
+  padding: 0.48rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.primary-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.danger-button {
+  color: #a33b32;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.settings-panel {
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  width: min(32rem, 100vw);
+  height: 100vh;
+  padding: 1.25rem;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  box-shadow: -0.5rem 0 2rem rgb(0 0 0 / 14%);
+  background: var(--surface);
+}
+
+.settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.settings-heading h2 {
+  margin: 0;
+}
+
+.settings-field {
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.settings-field input,
+.settings-field select {
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.profile-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.profile-card {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface-muted);
+}
+
+.enabled-field {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.5rem 0;
+}
+
+.credential-form {
+  margin: 0.9rem 0;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.credential-status,
+.profile-issues,
+.delete-note,
+.settings-error {
+  margin: 0.5rem 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.profile-issues,
+.settings-error {
+  color: #a33b32;
 }
 
 .app-header h1,
@@ -163,7 +294,8 @@ textarea {
   background: var(--surface);
 }
 
-.assistance-card + .assistance-card {
+.assistance-card + .assistance-card,
+.assistance-result + .assistance-result {
   margin-top: 1rem;
 }
 
@@ -176,6 +308,65 @@ textarea {
   margin: 0.75rem 0 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.assistance-result {
+  margin: 0;
+}
+
+.analysis-status,
+.neutral-state {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.track-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.native-intent-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.confirmed-indicator {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+}
+
+.native-intent-draft {
+  box-sizing: border-box;
+  display: block;
+  inline-size: 100%;
+  min-block-size: 8rem;
+  margin-block: 0.75rem;
+  resize: vertical;
+  text-align: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.intent-draft-message {
+  color: #a33b32;
+  margin-block-end: 0;
+}
+
+.recent-assistance {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.recent-assistance > h3 {
+  margin: 0 0 0.8rem;
+  font-size: 0.9rem;
 }
 
 .sr-only {

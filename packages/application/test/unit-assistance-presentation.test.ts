@@ -287,6 +287,102 @@ describe("unit assistance presentation", () => {
     );
 
     expect(model.active?.nativeIntentTracks[0]?.text).toBe(nativeIntent);
+    expect(model.active?.nativeIntent).toMatchObject({
+      text: nativeIntent,
+      state: "inferred",
+    });
+  });
+
+  it("presents confirmed intent as authoritative across context and model output", async () => {
+    const { coordinator, provider, units } = harness("One. Two.");
+    await completeUnit(coordinator, provider, units[0]!.id, "initial");
+    const before = createUnitAssistancePresentationModel(
+      coordinator,
+      units[0]!.id,
+      configuration(),
+    ).active!;
+    const exact = "用户确认的含义\n\n- 保留 emoji 😀";
+
+    const confirmed = coordinator.confirmNativeIntent(
+      units[0]!.id,
+      before.segmentId,
+      before.nativeIntent!.id,
+      exact,
+      before.sourceRevision,
+      before.nativeIntent!.revision,
+    );
+
+    expect(confirmed?.payload.text).toBe(exact);
+    expect(
+      createUnitAssistancePresentationModel(
+        coordinator,
+        units[0]!.id,
+        configuration(),
+      ).active?.nativeIntent,
+    ).toMatchObject({ text: exact, state: "confirmed" });
+
+    const changedContext = selection("One. Two.", "Changed context");
+    coordinator.synchronize(changedContext, segmenter.segment(changedContext.activeText));
+    const stale = createUnitAssistancePresentationModel(
+      coordinator,
+      units[0]!.id,
+      configuration(),
+    ).active!;
+    expect(stale.nativeIntent).toMatchObject({ text: exact, state: "confirmed" });
+    expect(stale.normalizedTracks).toEqual([]);
+
+    await completeUnit(
+      coordinator,
+      provider,
+      units[0]!.id,
+      "regenerated",
+      { nativeIntent: "model tried to replace it" },
+    );
+    const regenerated = createUnitAssistancePresentationModel(
+      coordinator,
+      units[0]!.id,
+      configuration(),
+    ).active!;
+    expect(regenerated.nativeIntent).toMatchObject({ text: exact, state: "confirmed" });
+    expect(provider.requests.at(-1)?.snapshot.confirmedNativeIntent?.text).toBe(exact);
+    expect(regenerated.normalizedTracks).toHaveLength(1);
+  });
+
+  it("keeps confirmation isolated from sibling units and invalidates it on source edit", async () => {
+    const { coordinator, provider, units } = harness("One. Two.");
+    await completeUnit(coordinator, provider, units[0]!.id, "one");
+    const first = createUnitAssistancePresentationModel(
+      coordinator,
+      units[0]!.id,
+      configuration(),
+    ).active!;
+    coordinator.confirmNativeIntent(
+      units[0]!.id,
+      first.segmentId,
+      first.nativeIntent!.id,
+      "Confirmed first",
+      first.sourceRevision,
+      first.nativeIntent!.revision,
+    );
+
+    expect(
+      createUnitAssistancePresentationModel(
+        coordinator,
+        units[1]!.id,
+        configuration(),
+      ).active?.nativeIntent,
+    ).toBeNull();
+
+    const edited = selection("Changed one. Two.");
+    const editedUnits = segmenter.segment(edited.activeText);
+    coordinator.synchronize(edited, editedUnits);
+    expect(
+      createUnitAssistancePresentationModel(
+        coordinator,
+        editedUnits[0]!.id,
+        configuration(),
+      ).active?.nativeIntent,
+    ).toBeNull();
   });
 
   it("preserves multiline Normalized variants exactly and in order", async () => {

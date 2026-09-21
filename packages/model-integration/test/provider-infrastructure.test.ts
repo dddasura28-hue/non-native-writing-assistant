@@ -32,6 +32,15 @@ function profile(overrides: Partial<ProviderProfile> = {}): ProviderProfile {
 }
 
 describe("provider infrastructure", () => {
+  it("allows HTTP only for explicit loopback development endpoints", () => {
+    expect(() =>
+      profile({ baseUrl: "http://models.example.test/v1" }),
+    ).toThrow(/HTTPS/);
+    expect(() =>
+      profile({ baseUrl: "http://127.0.0.1:8787/v1" }),
+    ).not.toThrow();
+  });
+
   it("keeps raw credentials out of ProviderProfile state", () => {
     const value = profile();
 

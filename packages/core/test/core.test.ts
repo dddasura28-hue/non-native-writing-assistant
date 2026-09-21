@@ -194,6 +194,69 @@ describe("confirmed native intent", () => {
       isConfirmedNativeIntentValid(confirmed, segment.sourceTrack.revision),
     ).toBe(false);
   });
+
+  it("confirms an inferred track in place and preserves exact multiline text", () => {
+    const segment = createSegment();
+    const inferred = createNativeIntentTrack({
+      id: asTrackId("intent-exact"),
+      segmentId,
+      text: "Inferred",
+      provenance: "model",
+      dependencyStamp: createStamp(),
+    });
+    segment.addDerivedTrack(inferred);
+    const sourceBefore = segment.sourceTrack;
+    const exact = "第一段 😀\n\n1. 保留 punctuation!\n2. final line  ";
+
+    const confirmed = segment.confirmNativeIntent(
+      inferred.id,
+      exact,
+      sourceBefore.revision,
+      inferred.revision,
+    );
+
+    expect(confirmed?.payload.text).toBe(exact);
+    expect(confirmed?.provenance).toBe("user-edited-model");
+    expect(confirmed?.revision).toBe(inferred.revision + 1);
+    expect(confirmed?.dependencyStamp.sourceRevision).toBe(sourceBefore.revision);
+    expect(segment.sourceTrack).toBe(sourceBefore);
+    expect(segment.sourceText).toBe("Draft text");
+  });
+
+  it("rejects a confirmation captured against an obsolete source revision", () => {
+    const segment = createSegment();
+    const inferred = createNativeIntentTrack({
+      id: asTrackId("intent-stale-source"),
+      segmentId,
+      text: "Inferred",
+      provenance: "model",
+      dependencyStamp: createStamp(),
+    });
+    segment.addDerivedTrack(inferred);
+    segment.updateSourceText("Changed source");
+
+    expect(
+      segment.confirmNativeIntent(inferred.id, "Too late", 1, inferred.revision),
+    ).toBeNull();
+    expect(segment.listDerivedTracks()).toEqual([inferred]);
+  });
+
+  it("rejects a confirmation captured against an obsolete intent revision", () => {
+    const segment = createSegment();
+    const inferred = createNativeIntentTrack({
+      id: asTrackId("intent-stale-track"),
+      segmentId,
+      text: "Inferred",
+      provenance: "model",
+      dependencyStamp: createStamp(),
+    });
+    segment.addDerivedTrack(inferred);
+
+    expect(
+      segment.confirmNativeIntent(inferred.id, "Too late", 1, 99),
+    ).toBeNull();
+    expect(segment.listDerivedTracks()).toEqual([inferred]);
+  });
 });
 
 describe("DependencyStamp", () => {

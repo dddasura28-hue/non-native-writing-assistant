@@ -4,11 +4,11 @@ An author-first writing assistant for composing directly in a non-native languag
 
 ## Development status
 
-The host-independent TypeScript core, asynchronous application orchestration, and the first standalone desktop shell are implemented. `apps/desktop-app` is the primary planned product host and uses Tauri 2, React, TypeScript, Vite, and a native HTML textarea. It currently validates the standalone window, `TextContext` capture, UTF-16 selection/caret semantics, composition observation, host capabilities, and guarded `TextEditPort` behavior.
+The host-independent TypeScript core, asynchronous application orchestration, and the first standalone desktop provider integration are implemented. `apps/desktop-app` is the primary product host and uses Tauri 2, React, TypeScript, Vite, and a native HTML textarea. It captures `TextContext`, applies the shared realtime analysis policies, and renders current Source, Native Intent, Normalized, status, and recent-assistance data.
 
-The assistance pane deliberately shows neutral Native Intent and Normalized placeholders. Live AI/provider requests, provider settings, Native Intent confirmation, Accept/Replace UI, system-wide capture, persistence, and native input-method bridges remain deferred. The guarded desktop edit adapter is infrastructure only and is not exposed as a product action in this phase.
+Desktop BYOK is the production provider path. The settings panel configures OpenAI, Anthropic, Gemini, or an OpenAI-compatible custom endpoint with an open model ID. Non-secret profile metadata is validated and stored in the operating system app-data directory. API credentials are stored separately by the Rust host in the operating system credential store and are represented in metadata only by an opaque `secretRef`; stored credentials are never read back into the settings UI. Existing TypeScript provider adapters still own vendor protocols, while a narrow native HTTPS transport performs their requests. With no valid active profile, the editor remains usable and assistance reports `Configuration required` without making a network request.
 
-`apps/obsidian-plugin` remains a frozen, buildable reference/development host. Its provider-profile mode, persistent Obsidian settings, direct OpenAI, Anthropic, Gemini, and OpenAI-compatible BYOK adapters remain unchanged. The deterministic demo provider and local-only OpenAI development gateway remain optional development paths. See [ARCHITECTURE.md](ARCHITECTURE.md#desktop-app-shell-v1).
+`apps/obsidian-plugin` remains a frozen, buildable reference/development host. Its provider-profile mode and host-specific secret storage remain separate; there is no credential migration between hosts. The deterministic desktop provider remains test-only. The desktop active-assistance pane supports revision-checked Native Intent editing and confirmation; drafts remain transient, Source is unchanged, and Normalized regenerates through the current provider profile. Accept/Replace UI, system-wide capture, account login/OAuth, cloud secret sync, and native input-method bridges remain deferred. See [ARCHITECTURE.md](ARCHITECTURE.md#native-intent-confirmation-v1).
 
 ## Desktop development
 
@@ -32,6 +32,8 @@ pnpm --dir apps/desktop-app test
 pnpm --dir apps/desktop-app typecheck
 pnpm --dir apps/desktop-app build
 ```
+
+Desktop provider metadata is written to Tauri's application-data directory as `provider-settings.json`. Credentials use the fixed native service namespace `com.nonnativewriting.assistant.provider-credentials`; they are not stored in this repository, environment files, browser storage, or the metadata JSON.
 
 ## Local AI development
 

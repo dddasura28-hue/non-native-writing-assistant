@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-shell",
-  "description": "Loads the local desktop writing shell without native API permissions.",
+  "description": "Loads the desktop writing shell. Fixed-purpose Rust commands handle credentials, provider settings, and provider HTTP.",
   "windows": ["main"],
   "permissions": []
 }

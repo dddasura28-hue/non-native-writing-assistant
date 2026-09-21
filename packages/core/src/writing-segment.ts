@@ -1,11 +1,16 @@
 import type { SegmentId, TrackId, TrackTypeId } from "./ids.js";
 import {
   createSourceTrack,
+  editNativeIntentTrack,
   type AnyTrack,
   type DerivedTrack,
+  type NativeIntentTrack,
   type SourceTrack,
 } from "./track.js";
-import { SOURCE_TRACK_TYPE_ID } from "./track-type-ids.js";
+import {
+  NATIVE_INTENT_TRACK_TYPE_ID,
+  SOURCE_TRACK_TYPE_ID,
+} from "./track-type-ids.js";
 
 export interface CreateWritingSegmentInput {
   readonly id: SegmentId;
@@ -76,6 +81,35 @@ export class WritingSegment {
     this.#derivedTracks.set(track.id, track);
   }
 
+  confirmNativeIntent(
+    trackId: TrackId,
+    text: string,
+    expectedSourceRevision: number,
+    expectedTrackRevision: number,
+  ): NativeIntentTrack | null {
+    if (this.#sourceTrack.revision !== expectedSourceRevision) {
+      return null;
+    }
+
+    const track = this.#derivedTracks.get(trackId);
+    if (
+      track === undefined ||
+      track.typeId !== NATIVE_INTENT_TRACK_TYPE_ID ||
+      track.revision !== expectedTrackRevision ||
+      !isTextTrack(track)
+    ) {
+      return null;
+    }
+
+    const confirmed = editNativeIntentTrack(
+      track,
+      text,
+      expectedSourceRevision,
+    );
+    this.#derivedTracks.set(track.id, confirmed);
+    return confirmed;
+  }
+
   updateSourceText(text: string): SourceTrack {
     if (text === this.#sourceTrack.payload.text) {
       return this.#sourceTrack;
@@ -90,4 +124,15 @@ export class WritingSegment {
 
     return this.#sourceTrack;
   }
+}
+
+function isTextTrack(
+  track: DerivedTrack<unknown>,
+): track is NativeIntentTrack {
+  return (
+    typeof track.payload === "object" &&
+    track.payload !== null &&
+    "text" in track.payload &&
+    typeof track.payload.text === "string"
+  );
 }

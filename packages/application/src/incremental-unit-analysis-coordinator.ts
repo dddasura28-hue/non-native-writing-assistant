@@ -7,6 +7,7 @@ import {
   dependencyStampMatches,
   type DependencyStamp,
   type DerivedTrack,
+  type NativeIntentTrack,
   type SegmentId,
   type TrackId,
 } from "@non-native-writing/core";
@@ -246,6 +247,35 @@ export class IncrementalUnitAnalysisCoordinator {
     return this.getCurrentResult(unitId, configuration) === null
       ? EMPTY_TRACK_IDS
       : this.#records.get(unitId)?.resultTrackIds ?? EMPTY_TRACK_IDS;
+  }
+
+  confirmNativeIntent(
+    unitId: string,
+    segmentId: SegmentId,
+    trackId: TrackId,
+    text: string,
+    expectedSourceRevision: number,
+    expectedTrackRevision: number,
+  ): NativeIntentTrack | null {
+    const record = this.#records.get(unitId);
+    if (record === undefined || record.segment.id !== segmentId) {
+      return null;
+    }
+
+    const confirmed = record.segment.confirmNativeIntent(
+      trackId,
+      text,
+      expectedSourceRevision,
+      expectedTrackRevision,
+    );
+    if (confirmed === null) {
+      return null;
+    }
+
+    this.#discardObsoletePending();
+    this.#cancelActiveIfObsolete();
+    this.#reconcileDependencyStates();
+    return confirmed;
   }
 
   async analyze(

@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@non-native-writing/application": "workspace:*",
+    "@non-native-writing/core": "workspace:*",
+    "@non-native-writing/model-integration": "workspace:*",
     "@tauri-apps/api": "2.11.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"

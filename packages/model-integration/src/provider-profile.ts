@@ -29,7 +29,7 @@ export function createProviderProfile(
   assertNonEmpty(profile.secretRef, "Secret reference");
 
   if (profile.baseUrl !== undefined) {
-    validateBaseUrl(profile.baseUrl);
+    validateProviderBaseUrl(profile.baseUrl);
   }
 
   if (
@@ -54,7 +54,7 @@ function assertNonEmpty(value: string, fieldName: string): void {
   }
 }
 
-function validateBaseUrl(value: string): void {
+export function validateProviderBaseUrl(value: string): void {
   let url: URL;
   try {
     url = new URL(value);
@@ -77,4 +77,20 @@ function validateBaseUrl(value: string): void {
       "Provider base URL must be an HTTP or HTTPS URL without credentials, query, or fragment.",
     );
   }
+
+  if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) {
+    throw new WritingModelError(
+      "invalid-profile",
+      "Provider base URL must use HTTPS; HTTP is allowed only for an explicit loopback development endpoint.",
+    );
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname === "::1"
+  );
 }

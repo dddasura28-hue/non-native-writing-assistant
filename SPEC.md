@@ -62,7 +62,21 @@ The planned primary product is a standalone desktop writing application over the
 - explicit application of suggestions to source text with revision checks; and
 - host-appropriate persistence of user settings and the minimum session metadata needed to restore the experience.
 
-Desktop App Shell v1 establishes the first standalone host with a Tauri 2 window, a React textarea editor, host-neutral `TextContext` capture, observable selection and composition state, and guarded edit infrastructure. Its assistance tracks intentionally remain empty placeholders: realtime analysis, provider-profile/BYOK settings, Native Intent confirmation, Accept/Replace UI, and system-wide assistance follow in later phases.
+Desktop App Shell v1 establishes the first standalone host with a Tauri 2 window, a React textarea editor, host-neutral `TextContext` capture, observable selection and composition state, and guarded edit infrastructure. Desktop Engine Integration v1 adds cursor-local automatic assistance through the existing selectors, writing-unit segmentation, trigger policy, incremental coordinator, analysis coordinator, and provider boundary. Desktop BYOK & Secret Storage v1 makes the existing OpenAI, Anthropic, Gemini, and OpenAI-compatible adapters the production desktop path. Provider metadata and active selection persist separately from credentials; the native host stores secrets in the operating system credential store and performs adapter-built HTTP requests. A missing configuration never blocks source editing or produces fake output. Native Intent Confirmation v1 adds an active-target editor and explicit confirmation checkpoint. Accept/Replace UI and system-wide assistance follow in later phases.
+
+### Desktop Native Intent confirmation
+
+The active assistance item presents Native Intent in one of two states. An inferred intent is the model's editable semantic mirror. A confirmed intent is the user's semantic checkpoint, stored with user-confirmed provenance against the exact current source revision. Confirm preserves the draft text exactly, never changes Source, and immediately regenerates Normalized for the same writing unit or whole explicit selection through the provider-neutral confirmed-intent request field.
+
+The editable draft is transient React state bound to the current segment, unit or selection, source revision, and intent track revision. It is discarded when the active semantic target changes and is never written to settings, browser storage, the filesystem, credential storage, or history. Reset Draft restores the current inferred or confirmed semantic value without changing domain state or calling a provider. Recent Assistance remains read-only.
+
+A source mutation invalidates confirmation without fuzzy migration. A context-only, provider, or model change leaves a source-current confirmed intent intact while making older generated output dependency-stale; regeneration uses the current dependencies plus the same confirmed text. Provider failure after confirmation does not undo the confirmation. Clearing an existing confirmation is deferred to a separate future action and is not part of Reset Draft.
+
+### Desktop provider configuration
+
+The desktop settings surface supports multiple named profiles, an open model ID, enable/disable state, explicit active-profile selection, and separate credential replacement/removal. OpenAI-compatible profiles also expose their visible base URL and structured-output compatibility mode; DeepSeek uses this custom-provider path rather than a dedicated adapter. Only HTTPS endpoints are accepted, except for exact loopback HTTP endpoints used deliberately in local development. Credentials embedded in URLs are invalid.
+
+Persisted profile metadata may contain a generated `secretRef`, but never the resolved credential, authorization headers, or provider response data. Deleting profile metadata does not delete its credential. Analysis resolves the active profile and credential at request time. Profile and model changes alter the analysis dependency fingerprint, immediately make incompatible output non-current, and refresh only the active target under the existing trigger policy.
 
 ## Explicit non-goals
 

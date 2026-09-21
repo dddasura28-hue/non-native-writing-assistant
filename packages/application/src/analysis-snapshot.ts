@@ -51,7 +51,7 @@ function isNativeIntentTrack(track: AnyTrack): track is NativeIntentTrack {
   );
 }
 
-function findCurrentConfirmedNativeIntent(
+export function findCurrentConfirmedNativeIntent(
   segment: WritingSegment,
 ): NativeIntentTrack | undefined {
   let selected: NativeIntentTrack | undefined;

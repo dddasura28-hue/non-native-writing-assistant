@@ -1,11 +1,13 @@
 import {
   NATIVE_INTENT_TRACK_TYPE_ID,
   NORMALIZED_TRACK_TYPE_ID,
+  type SegmentId,
   type DerivedTrack,
   type TrackId,
 } from "@non-native-writing/core";
 
 import type { AnalysisConfiguration } from "./analysis-configuration.js";
+import { findCurrentConfirmedNativeIntent } from "./analysis-snapshot.js";
 import type { IncrementalUnitAnalysisCoordinator } from "./incremental-unit-analysis-coordinator.js";
 import type { UnitAnalysisStatus } from "./unit-analysis-state.js";
 
@@ -18,11 +20,21 @@ export interface UnitAssistanceTrackPresentation {
   readonly order?: number;
 }
 
+export interface NativeIntentPresentation {
+  readonly id: TrackId;
+  readonly text: string;
+  readonly state: "inferred" | "confirmed";
+  readonly revision: number;
+}
+
 /** Provider- and host-neutral view data for one transient WritingUnit. */
 export interface UnitAssistancePresentation {
   readonly unitId: string;
+  readonly segmentId: SegmentId;
+  readonly sourceRevision: number;
   readonly sourceText: string;
   readonly status: UnitAnalysisStatus;
+  readonly nativeIntent: NativeIntentPresentation | null;
   readonly nativeIntentTracks: readonly UnitAssistanceTrackPresentation[];
   readonly normalizedTracks: readonly UnitAssistanceTrackPresentation[];
   readonly isActive: boolean;
@@ -135,15 +147,43 @@ function presentUnit(
     record.state.status === "completed" && !isCurrent
       ? "stale"
       : record.state.status;
+  const confirmedIntent = findCurrentConfirmedNativeIntent(record.segment);
+  const inferredIntent =
+    tracks.find((track) => track.typeId === NATIVE_INTENT_TRACK_TYPE_ID) ??
+    record.segment
+      .listDerivedTracks()
+      .filter(isTextTrack)
+      .filter(
+        (track) =>
+          track.typeId === NATIVE_INTENT_TRACK_TYPE_ID &&
+          track.provenance === "model",
+      )
+      .at(-1);
+  const semanticIntent = confirmedIntent ?? inferredIntent;
+  const nativeIntent =
+    semanticIntent === undefined
+      ? null
+      : Object.freeze({
+          id: semanticIntent.id,
+          text: semanticIntent.payload.text,
+          state: confirmedIntent === undefined ? "inferred" as const : "confirmed" as const,
+          revision: semanticIntent.revision,
+        });
 
   return Object.freeze({
     unitId: record.unit.id,
+    segmentId: record.segment.id,
+    sourceRevision: record.segment.sourceTrack.revision,
     sourceText: record.unit.text,
     status,
-    nativeIntentTracks: presentTracks(
-      tracks,
-      NATIVE_INTENT_TRACK_TYPE_ID,
-    ),
+    nativeIntent,
+    nativeIntentTracks:
+      nativeIntent === null
+        ? Object.freeze([])
+        : Object.freeze([Object.freeze({
+            id: nativeIntent.id,
+            text: nativeIntent.text,
+          })]),
     normalizedTracks: presentTracks(tracks, NORMALIZED_TRACK_TYPE_ID),
     isActive,
   });
