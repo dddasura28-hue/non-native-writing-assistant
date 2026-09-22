@@ -16,7 +16,6 @@ import {
 } from "./desktop-engine-controller.js";
 import {
   GlobalDesktopAssistantController,
-  type GlobalDesktopManualAnalysisResult,
   type PresentGlobalDesktopAssistant,
 } from "./global-desktop-assistant-controller.js";
 import { DesktopHttpTransport } from "../native/desktop-http-transport.js";
@@ -26,6 +25,13 @@ import {
   TauriDesktopSecretStore,
 } from "../native/desktop-secret-store.js";
 import { WindowsActiveTextSurfacePort } from "../native/windows-active-text-surface.js";
+import {
+  TauriWindowsGlobalShortcutBridge,
+  createFloatingAssistantPresentation,
+  type WindowsGlobalCaptureEvent,
+  type WindowsGlobalShortcutBridge,
+  type WindowsGlobalShortcutStatus,
+} from "../native/windows-global-shortcut-bridge.js";
 import { DesktopProfileAnalysisConfigurationSource } from "../provider/desktop-analysis-configuration-source.js";
 import { DesktopProfiledAnalysisProvider } from "../provider/desktop-profiled-analysis-provider.js";
 import { DesktopProviderProfileStore } from "../settings/desktop-provider-settings.js";
@@ -48,10 +54,7 @@ export interface DesktopControllerPort extends DesktopProviderSettingsPort {
   acceptNormalized(
     target: DesktopNormalizedAcceptTarget,
   ): Promise<DesktopNormalizedAcceptResult>;
-  analyzeWindowsActiveTextSurface(): Promise<GlobalDesktopManualAnalysisResult>;
-  acceptWindowsNormalized(
-    target: DesktopNormalizedAcceptTarget,
-  ): Promise<DesktopNormalizedAcceptResult>;
+  getWindowsGlobalShortcutStatus(): Promise<WindowsGlobalShortcutStatus>;
   dispose(): void;
 }
 
@@ -66,22 +69,77 @@ export const createDesktopController: DesktopControllerFactory = (
   present,
   presentSettings,
   presentGlobal,
-) => {
+) => createDesktopControllerWithBridge(
+  present,
+  presentSettings,
+  presentGlobal,
+  new TauriWindowsGlobalShortcutBridge(),
+);
+
+export function createDesktopControllerWithBridge(
+  present: PresentDesktopAssistance,
+  presentSettings: PresentDesktopProviderSettings,
+  presentGlobal: PresentGlobalDesktopAssistant,
+  shortcutBridge: WindowsGlobalShortcutBridge,
+): DesktopControllerPort {
   const profiles = new DesktopProviderProfileStore(
     new TauriProviderSettingsPersistence(),
   );
   const secrets = new TauriDesktopSecretStore();
+  let configurationRequired = true;
   const settings = new DesktopProviderSettingsController(
     profiles,
     secrets,
-    presentSettings,
+    (view) => {
+      configurationRequired = view.configurationRequired;
+      presentSettings(view);
+    },
   );
+  const windowsSurface = new WindowsActiveTextSurfacePort();
   let writing: DesktopEngineController | null = null;
   let global: GlobalDesktopAssistantController | null = null;
+  let pendingGlobalCapture: WindowsGlobalCaptureEvent | null = null;
+  let currentGlobalInvocationId = 0;
+  let globalPresentationEnabled = false;
+  let stopListening: (() => void) | null = null;
   let pendingContext: TextContext | null = null;
   let pendingEditPort: TextEditPort | null = null;
   let pendingObservationOptions: DesktopObservationOptions | undefined;
   let disposed = false;
+
+  const publishGlobal: PresentGlobalDesktopAssistant = (presentation) => {
+    presentGlobal(presentation);
+    if (globalPresentationEnabled && currentGlobalInvocationId > 0) {
+      void shortcutBridge.publishPresentation(
+        createFloatingAssistantPresentation(
+          currentGlobalInvocationId,
+          presentation,
+        ),
+      ).catch(() => undefined);
+    }
+  };
+
+  const analyzeCapture = (event: WindowsGlobalCaptureEvent): void => {
+    if (disposed || event.invocationId <= currentGlobalInvocationId) {
+      return;
+    }
+    currentGlobalInvocationId = event.invocationId;
+    pendingGlobalCapture = null;
+    windowsSurface.stage(event.response);
+    if (global === null) {
+      pendingGlobalCapture = event;
+      return;
+    }
+    void global.analyzeActiveTextSurface({ configurationRequired });
+  };
+
+  void shortcutBridge.listenForCaptures(analyzeCapture).then((unlisten) => {
+    if (disposed) {
+      unlisten();
+    } else {
+      stopListening = unlisten;
+    }
+  }).catch(() => undefined);
 
   void settings.initialize().then(() => {
     if (disposed) {
@@ -101,11 +159,12 @@ export const createDesktopController: DesktopControllerFactory = (
       configurationSource,
     });
     global = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(),
+      windowsSurface,
       provider,
-      presentGlobal,
+      publishGlobal,
       { configurationSource },
     );
+    globalPresentationEnabled = true;
     if (pendingContext !== null) {
       writing.observe(
         pendingContext,
@@ -115,6 +174,11 @@ export const createDesktopController: DesktopControllerFactory = (
       pendingContext = null;
       pendingEditPort = null;
       pendingObservationOptions = undefined;
+    }
+    if (pendingGlobalCapture !== null) {
+      windowsSurface.stage(pendingGlobalCapture.response);
+      pendingGlobalCapture = null;
+      void global.analyzeActiveTextSurface({ configurationRequired });
     }
   });
 
@@ -132,10 +196,8 @@ export const createDesktopController: DesktopControllerFactory = (
       writing?.confirmNativeIntent(target, text) ?? "obsolete",
     acceptNormalized: (target) =>
       writing?.acceptNormalized(target) ?? Promise.resolve("obsolete"),
-    analyzeWindowsActiveTextSurface: () =>
-      global?.analyzeActiveTextSurface() ?? Promise.resolve("unavailable"),
-    acceptWindowsNormalized: (target) =>
-      global?.acceptNormalized(target) ?? Promise.resolve("obsolete"),
+    getWindowsGlobalShortcutStatus: () =>
+      shortcutBridge.getRegistrationStatus(),
     addProfile: (providerId) => settings.addProfile(providerId),
     updateProfile: (profileId, patch) =>
       settings.updateProfile(profileId, patch),
@@ -149,9 +211,13 @@ export const createDesktopController: DesktopControllerFactory = (
       pendingContext = null;
       pendingEditPort = null;
       pendingObservationOptions = undefined;
+      pendingGlobalCapture = null;
+      globalPresentationEnabled = false;
+      stopListening?.();
+      stopListening = null;
       settings.dispose();
       writing?.dispose();
       global?.dispose();
     },
   };
-};
+}

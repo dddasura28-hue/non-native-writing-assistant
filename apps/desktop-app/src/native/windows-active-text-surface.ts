@@ -3,10 +3,6 @@ import {
   type ActiveTextSurfaceCapture,
   type ActiveTextSurfacePort,
 } from "../host/active-text-surface.js";
-import {
-  invokeNative,
-  type NativeInvoke,
-} from "./native-command-client.js";
 
 export type WindowsCaptureUnavailableReason =
   | "no-focused-element"
@@ -48,28 +44,23 @@ export type NativeWindowsCaptureResponse =
       readonly reason: WindowsCaptureUnavailableReason;
     };
 
-const CAPTURE_COMMAND = "capture_active_windows_text_surface";
-
-/** Thin Tauri adapter. UIA objects and capture identity never leave Rust. */
+/** Consumes snapshots captured by the native shortcut before any app window is shown. */
 export class WindowsActiveTextSurfacePort implements ActiveTextSurfacePort {
-  readonly #invoke: NativeInvoke;
+  #pending: NativeWindowsCaptureResponse | null = null;
   #lastUnavailableReason: WindowsCaptureUnavailableReason | null = null;
-
-  constructor(invoke: NativeInvoke = invokeNative) {
-    this.#invoke = invoke;
-  }
 
   get lastUnavailableReason(): WindowsCaptureUnavailableReason | null {
     return this.#lastUnavailableReason;
   }
 
+  stage(response: NativeWindowsCaptureResponse): void {
+    this.#pending = response;
+  }
+
   async capture(): Promise<ActiveTextSurfaceCapture | null> {
-    let response: NativeWindowsCaptureResponse;
-    try {
-      response = await this.#invoke<NativeWindowsCaptureResponse>(
-        CAPTURE_COMMAND,
-      );
-    } catch {
+    const response = this.#pending;
+    this.#pending = null;
+    if (response === null) {
       this.#lastUnavailableReason = "native-uia-unavailable";
       return null;
     }

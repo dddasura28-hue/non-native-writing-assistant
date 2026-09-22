@@ -226,6 +226,23 @@ describe("GlobalDesktopAssistantController", () => {
     expect(harness.provider.requests).toHaveLength(0);
   });
 
+  it("captures but does not call the provider when configuration is required", async () => {
+    const harness = createHarness(textContext("Captured without a profile."));
+
+    await expect(harness.controller.analyzeActiveTextSurface({
+      configurationRequired: true,
+    })).resolves.toBe("configuration-required");
+
+    expect(harness.surface.captureCount).toBe(1);
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(harness.latest()).toMatchObject({
+      hostAvailable: true,
+      sourceText: "Captured without a profile.",
+      status: "configuration-required",
+      guardedAcceptAllowed: false,
+    });
+  });
+
   it("performs a fresh capture for every manual invocation", async () => {
     const harness = createHarness(textContext("First."));
     await analyzeAndComplete(harness, "First normalized.");

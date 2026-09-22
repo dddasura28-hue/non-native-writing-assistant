@@ -233,6 +233,20 @@ mod tests {
     }
 
     #[test]
+    fn own_process_control_is_rejected() {
+        assert_eq!(
+            validate_element(ElementFacts {
+                own_process: true,
+                protected: false,
+                enabled: true,
+                keyboard_focusable: true,
+                has_text_pattern: true,
+            }),
+            Err(WindowsCaptureUnavailableReason::OwnProcess)
+        );
+    }
+
+    #[test]
     fn unsupported_element_is_unavailable() {
         assert_eq!(
             validate_element(ElementFacts {

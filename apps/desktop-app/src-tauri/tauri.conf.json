@@ -19,10 +19,27 @@
         "minWidth": 760,
         "minHeight": 520,
         "resizable": true
+      },
+      {
+        "label": "global-assistant",
+        "title": "Writing Assistance",
+        "url": "index.html?surface=global-assistant",
+        "width": 420,
+        "height": 320,
+        "minWidth": 340,
+        "minHeight": 220,
+        "maxWidth": 520,
+        "maxHeight": 460,
+        "resizable": true,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
       }
     ],
     "security": {
-      "capabilities": ["desktop-shell"],
+      "capabilities": ["desktop-shell", "global-assistant"],
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'"
     }
   },

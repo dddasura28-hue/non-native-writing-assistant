@@ -27,10 +27,6 @@ import {
   type DesktopNormalizedPresentation,
 } from "./controller/desktop-engine-controller.js";
 import {
-  EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
-  type GlobalDesktopAssistantPresentation,
-} from "./controller/global-desktop-assistant-controller.js";
-import {
   createDesktopController,
   type DesktopControllerFactory,
   type DesktopControllerPort,
@@ -59,6 +55,7 @@ import {
   type DesktopProviderProfileView,
   type DesktopProviderSettingsView,
 } from "./settings/desktop-settings-controller.js";
+import type { WindowsGlobalShortcutStatus } from "./native/windows-global-shortcut-bridge.js";
 
 const EMPTY_CONTEXT = createTextContext({
   text: "",
@@ -66,8 +63,6 @@ const EMPTY_CONTEXT = createTextContext({
   selection: null,
   composition: null,
 });
-
-const WINDOWS_CAPTURE_DELAY_MS = 3_000;
 
 export interface AppProps {
   readonly createController?: DesktopControllerFactory;
@@ -84,11 +79,11 @@ export function App({
     useState<DesktopAssistancePresentation>(EMPTY_DESKTOP_ASSISTANCE);
   const [providerSettings, setProviderSettings] =
     useState<DesktopProviderSettingsView>(EMPTY_DESKTOP_PROVIDER_SETTINGS_VIEW);
-  const [windowsAssistance, setWindowsAssistance] =
-    useState<GlobalDesktopAssistantPresentation>(
-      EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
-    );
-  const [windowsCaptureScheduled, setWindowsCaptureScheduled] = useState(false);
+  const [shortcutStatus, setShortcutStatus] =
+    useState<WindowsGlobalShortcutStatus>({
+      state: "initializing",
+      shortcut: "Ctrl+Alt+Space",
+    });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inlineAnchor, setInlineAnchor] =
     useState<TextareaTextAnchor | null>(null);
@@ -101,7 +96,6 @@ export function App({
   const sessionToken = useRef(Symbol("desktop-textarea-session"));
   const generation = useRef(0);
   const composition = useRef(new TextareaCompositionTracker());
-  const windowsCaptureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const currentSession = useCallback(
     (): TextareaSessionState => ({
@@ -153,18 +147,19 @@ export function App({
     const activeController = createController(
       setAssistance,
       setProviderSettings,
-      setWindowsAssistance,
+      () => undefined,
     );
     controller.current = activeController;
+    void activeController.getWindowsGlobalShortcutStatus().then((status) => {
+      if (controller.current === activeController) {
+        setShortcutStatus(status);
+      }
+    });
     if (editor.current !== null) {
       capture(editor.current);
     }
 
     return () => {
-      if (windowsCaptureTimer.current !== null) {
-        clearTimeout(windowsCaptureTimer.current);
-        windowsCaptureTimer.current = null;
-      }
       controller.current = null;
       activeController.dispose();
     };
@@ -218,28 +213,6 @@ export function App({
       } finally {
         editor.current?.focus({ preventScroll: true });
       }
-    },
-    [],
-  );
-
-  const handleAnalyzeWindowsSurface = useCallback((): void => {
-    if (windowsCaptureTimer.current !== null) {
-      return;
-    }
-    setWindowsCaptureScheduled(true);
-    windowsCaptureTimer.current = setTimeout(() => {
-      windowsCaptureTimer.current = null;
-      setWindowsCaptureScheduled(false);
-      void controller.current?.analyzeWindowsActiveTextSurface();
-    }, WINDOWS_CAPTURE_DELAY_MS);
-  }, []);
-
-  const handleAcceptWindowsNormalized = useCallback(
-    async (target: DesktopNormalizedAcceptTarget): Promise<void> => {
-      await (
-        controller.current?.acceptWindowsNormalized(target) ??
-        Promise.resolve("obsolete")
-      );
     },
     [],
   );
@@ -449,6 +422,9 @@ export function App({
             <span>Caret {textContext.cursorOffset}</span>
             <span>Selection {selectionStatus}</span>
             <span>Composition {compositionStatus}</span>
+            <span>
+              Global shortcut {shortcutStatus.shortcut}: {shortcutStatus.state}
+            </span>
           </aside>
         </section>
 
@@ -490,82 +466,7 @@ export function App({
         </section>
       </div>
 
-      <WindowsExternalDevelopmentPanel
-        presentation={windowsAssistance}
-        captureScheduled={windowsCaptureScheduled}
-        onAnalyze={handleAnalyzeWindowsSurface}
-        onAccept={handleAcceptWindowsNormalized}
-      />
     </main>
-  );
-}
-
-function WindowsExternalDevelopmentPanel({
-  presentation,
-  captureScheduled,
-  onAnalyze,
-  onAccept,
-}: {
-  readonly presentation: GlobalDesktopAssistantPresentation;
-  readonly captureScheduled: boolean;
-  readonly onAnalyze: () => void;
-  readonly onAccept: (target: DesktopNormalizedAcceptTarget) => Promise<void>;
-}) {
-  const active = presentation.assistance.active;
-  const statusMessage = captureScheduled
-    ? "Focus the external Windows text field now; capture starts in 3 seconds."
-    : presentation.status === "no-host"
-      ? "No supported Windows text field focused"
-      : presentation.statusMessage;
-
-  return (
-    <section
-      className="windows-external-development"
-      aria-labelledby="windows-external-heading"
-    >
-      <div className="windows-external-heading">
-        <div>
-          <p className="pane-kicker">Experimental manual capture</p>
-          <h2 id="windows-external-heading">
-            Windows external-host development
-          </h2>
-        </div>
-        <button
-          className="secondary-button"
-          type="button"
-          disabled={captureScheduled}
-          onClick={onAnalyze}
-        >
-          Analyze focused Windows field
-        </button>
-      </div>
-      <p className="windows-external-instructions">
-        Click Analyze, then focus the external text field within three seconds.
-        This manual UI Automation path excludes this app and never uses the clipboard
-        or simulated typing.
-      </p>
-      <p className="analysis-status" role="status">{statusMessage}</p>
-      <div className="windows-capability-status" aria-label="Windows host capabilities">
-        <span>{presentation.hostAvailable ? "Supported host" : "Unavailable host"}</span>
-        <span>{presentation.readOnly ? "Read-only" : "Writable"}</span>
-        <span>Realtime disabled</span>
-      </div>
-      {presentation.sourceText === null ? null : (
-        <TrackSection heading="External Source" values={[presentation.sourceText]} />
-      )}
-      {active === null ? null : (
-        <>
-          <TrackSection
-            heading="External Native Intent"
-            values={active.nativeIntentTracks.map((track) => track.text)}
-          />
-          <NormalizedSection
-            variants={active.normalizedTracks}
-            onAccept={onAccept}
-          />
-        </>
-      )}
-    </section>
   );
 }
 

@@ -73,7 +73,7 @@ describe("desktop dependency boundaries", () => {
     }
   });
 
-  it("keeps Windows UIA behind one fixed-purpose native command", () => {
+  it("keeps Windows UIA behind one fixed-purpose native capture event", () => {
     const adapter = readFileSync(
       resolve(
         repositoryRoot,
@@ -81,8 +81,18 @@ describe("desktop dependency boundaries", () => {
       ),
       "utf8",
     );
-    expect(adapter).toContain('"capture_active_windows_text_surface"');
     expect(adapter).not.toMatch(
+      /HWND|processId|windowTitle|runtimeId|AutomationElement|SendInput|SendKeys|clipboard/,
+    );
+    const shortcutBridge = readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/desktop-app/src/native/windows-global-shortcut-bridge.ts",
+      ),
+      "utf8",
+    );
+    expect(shortcutBridge).toContain('"windows-global-capture"');
+    expect(shortcutBridge).not.toMatch(
       /HWND|processId|windowTitle|runtimeId|AutomationElement|SendInput|SendKeys|clipboard/,
     );
 
@@ -97,5 +107,72 @@ describe("desktop dependency boundaries", () => {
     expect(rustSource).not.toMatch(
       /SendInput|SendKeys|OpenClipboard|SetClipboardData|RegisterHotKey/,
     );
+    const shortcutSource = readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/desktop-app/src-tauri/src/global_shortcut.rs",
+      ),
+      "utf8",
+    );
+    expect(shortcutSource).not.toMatch(/set_focus\s*\(/u);
+  });
+
+  it("configures one hidden non-focusable reusable global assistant window", () => {
+    const config = JSON.parse(readFileSync(
+      resolve(repositoryRoot, "apps/desktop-app/src-tauri/tauri.conf.json"),
+      "utf8",
+    )) as {
+      app: { windows: Array<Record<string, unknown>> };
+    };
+    const assistant = config.app.windows.filter(
+      (window) => window.label === "global-assistant",
+    );
+
+    expect(assistant).toHaveLength(1);
+    expect(assistant[0]).toMatchObject({
+      visible: false,
+      focus: false,
+      focusable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+    });
+  });
+
+  it("keeps shortcut registration native and grants only the event bridge", () => {
+    const cargo = readFileSync(
+      resolve(repositoryRoot, "apps/desktop-app/src-tauri/Cargo.toml"),
+      "utf8",
+    );
+    const desktopPackage = JSON.parse(readFileSync(
+      resolve(repositoryRoot, "apps/desktop-app/package.json"),
+      "utf8",
+    )) as { dependencies: Record<string, string> };
+    const mainCapability = JSON.parse(readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/desktop-app/src-tauri/capabilities/desktop-shell.json",
+      ),
+      "utf8",
+    )) as { permissions: string[] };
+
+    expect(cargo).toContain('tauri-plugin-global-shortcut = "=2.3.2"');
+    expect(desktopPackage.dependencies)
+      .not.toHaveProperty("@tauri-apps/plugin-global-shortcut");
+    expect(mainCapability.permissions).toEqual([
+      "core:event:allow-listen",
+      "core:event:allow-unlisten",
+      "core:event:allow-emit-to",
+    ]);
+    const assistantCapability = JSON.parse(readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/desktop-app/src-tauri/capabilities/global-assistant.json",
+      ),
+      "utf8",
+    )) as { permissions: string[] };
+    expect(assistantCapability.permissions).toEqual([
+      "core:event:allow-listen",
+      "core:event:allow-unlisten",
+    ]);
   });
 });

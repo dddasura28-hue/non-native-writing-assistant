@@ -24,6 +24,7 @@ export type GlobalDesktopAssistantStatus =
   | "no-host"
   | "empty"
   | "composition-active"
+  | "configuration-required"
   | "idle"
   | "analyzing"
   | "completed"
@@ -51,7 +52,12 @@ export type GlobalDesktopManualAnalysisResult =
   | "unavailable"
   | "empty"
   | "composition-active"
+  | "configuration-required"
   | "obsolete";
+
+export interface GlobalDesktopManualAnalysisOptions {
+  readonly configurationRequired?: boolean;
+}
 
 export type GlobalDesktopAssistantControllerOptions = Pick<
   DesktopEngineControllerOptions,
@@ -101,7 +107,9 @@ export class GlobalDesktopAssistantController {
     this.#present(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
   }
 
-  async analyzeActiveTextSurface(): Promise<GlobalDesktopManualAnalysisResult> {
+  async analyzeActiveTextSurface(
+    options: GlobalDesktopManualAnalysisOptions = {},
+  ): Promise<GlobalDesktopManualAnalysisResult> {
     if (this.#disposed) {
       return "obsolete";
     }
@@ -156,6 +164,13 @@ export class GlobalDesktopAssistantController {
         "No analyzable text in the active host",
       ));
       return "empty";
+    }
+    if (options.configurationRequired === true) {
+      this.#present(this.#captureState(
+        "configuration-required",
+        "Configure a provider in the main app to analyze this text",
+      ));
+      return "configuration-required";
     }
 
     let engine!: DesktopEngineController;
@@ -269,7 +284,7 @@ export class GlobalDesktopAssistantController {
   }
 
   #captureState(
-    status: "empty" | "composition-active",
+    status: "empty" | "composition-active" | "configuration-required",
     statusMessage: string,
   ): GlobalDesktopAssistantPresentation {
     const capture = this.#capture!;

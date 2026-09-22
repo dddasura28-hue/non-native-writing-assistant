@@ -9,13 +9,12 @@ import {
   asGenerationGroupId,
   asTrackId,
 } from "@non-native-writing/core";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   GlobalDesktopAssistantController,
   type GlobalDesktopAssistantPresentation,
 } from "../controller/global-desktop-assistant-controller.js";
-import type { NativeInvoke } from "./native-command-client.js";
 import {
   WindowsActiveTextSurfacePort,
   type NativeWindowsCaptureResponse,
@@ -46,14 +45,10 @@ function captured(
   };
 }
 
-function nativeInvoke(
-  implementation: () => Promise<NativeWindowsCaptureResponse>,
-): { readonly invoke: NativeInvoke; readonly mock: ReturnType<typeof vi.fn> } {
-  const mock = vi.fn(implementation);
-  return {
-    invoke: <T>() => mock() as Promise<T>,
-    mock,
-  };
+function portWith(response: NativeWindowsCaptureResponse) {
+  const port = new WindowsActiveTextSurfacePort();
+  port.stage(response);
+  return port;
 }
 
 class ImmediateProvider implements AnalysisProvider {
@@ -117,12 +112,10 @@ async function flush(): Promise<void> {
 
 describe("WindowsActiveTextSurfacePort", () => {
   it("maps the minimal native payload into an ActiveTextSurfaceCapture", async () => {
-    const { invoke, mock } = nativeInvoke(async () => captured());
-    const port = new WindowsActiveTextSurfacePort(invoke);
+    const port = portWith(captured());
 
     const capture = await port.capture();
 
-    expect(mock).toHaveBeenCalledOnce();
     expect(capture).toEqual({
       context: {
         text: "A😀B",
@@ -152,9 +145,7 @@ describe("WindowsActiveTextSurfacePort", () => {
         canProvideSurroundingText: false,
       },
     });
-    const port = new WindowsActiveTextSurfacePort(
-      nativeInvoke(async () => response).invoke,
-    );
+    const port = portWith(response);
 
     const capture = await port.capture();
 
@@ -171,9 +162,7 @@ describe("WindowsActiveTextSurfacePort", () => {
         canProvideSurroundingText: true,
       },
     });
-    const port = new WindowsActiveTextSurfacePort(
-      nativeInvoke(async () => response).invoke,
-    );
+    const port = portWith(response);
 
     await expect(port.capture()).resolves.toBeNull();
     expect(port.lastUnavailableReason).toBe("native-uia-unavailable");
@@ -181,18 +170,23 @@ describe("WindowsActiveTextSurfacePort", () => {
 
   it("maps protected and unsupported fields to unavailable captures", async () => {
     for (const reason of ["protected-field", "unsupported-text-pattern"] as const) {
-      const port = new WindowsActiveTextSurfacePort(
-        nativeInvoke(async () => ({ status: "unavailable", reason })).invoke,
-      );
+      const port = portWith({ status: "unavailable", reason });
       await expect(port.capture()).resolves.toBeNull();
       expect(port.lastUnavailableReason).toBe(reason);
     }
   });
 
+  it("consumes a staged native snapshot exactly once", async () => {
+    const port = portWith(captured("one-shot"));
+
+    await expect(port.capture()).resolves.toMatchObject({
+      context: { text: "one-shot" },
+    });
+    await expect(port.capture()).resolves.toBeNull();
+  });
+
   it("runs manual global analysis through the existing controller as read-only", async () => {
-    const port = new WindowsActiveTextSurfacePort(
-      nativeInvoke(async () => captured("This method have problem.")).invoke,
-    );
+    const port = portWith(captured("This method have problem."));
     const provider = new ImmediateProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
     const controller = new GlobalDesktopAssistantController(
@@ -217,12 +211,10 @@ describe("WindowsActiveTextSurfacePort", () => {
   it("never sends protected text to the analysis provider", async () => {
     const provider = new ImmediateProvider();
     const controller = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(
-        nativeInvoke(async () => ({
-          status: "unavailable",
-          reason: "protected-field",
-        })).invoke,
-      ),
+      portWith({
+        status: "unavailable",
+        reason: "protected-field",
+      }),
       provider,
       () => undefined,
     );
@@ -242,9 +234,7 @@ describe("WindowsActiveTextSurfacePort", () => {
     });
     const provider = new ImmediateProvider();
     const controller = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(
-        nativeInvoke(async () => response).invoke,
-      ),
+      portWith(response),
       provider,
       () => undefined,
     );
@@ -259,25 +249,20 @@ describe("WindowsActiveTextSurfacePort", () => {
   });
 
   it("fresh manual actions always invoke a fresh Windows capture", async () => {
-    let captureNumber = 0;
-    const { invoke, mock } = nativeInvoke(async () => {
-      captureNumber += 1;
-      return captured(`host ${captureNumber}`, {
-        captureToken: `opaque-${captureNumber}`,
-      });
-    });
+    const port = new WindowsActiveTextSurfacePort();
     const provider = new ImmediateProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
     const controller = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(invoke),
+      port,
       provider,
       (presentation) => presentations.push(presentation),
     );
 
+    port.stage(captured("host 1", { captureToken: "opaque-1" }));
     await controller.analyzeActiveTextSurface();
+    port.stage(captured("host 2", { captureToken: "opaque-2" }));
     await controller.analyzeActiveTextSurface();
 
-    expect(mock).toHaveBeenCalledTimes(2);
     expect(provider.snapshots.map((snapshot) => snapshot.sourceText)).toEqual([
       "host 1",
       "host 2",
@@ -286,15 +271,7 @@ describe("WindowsActiveTextSurfacePort", () => {
   });
 
   it("same text from a new capture supersedes the old Windows invocation", async () => {
-    let captureNumber = 0;
-    const port = new WindowsActiveTextSurfacePort(
-      nativeInvoke(async () => {
-        captureNumber += 1;
-        return captured("identical text", {
-          captureToken: `session-${captureNumber}`,
-        });
-      }).invoke,
-    );
+    const port = new WindowsActiveTextSurfacePort();
     const provider = new DeferredProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
     const controller = new GlobalDesktopAssistantController(
@@ -303,8 +280,10 @@ describe("WindowsActiveTextSurfacePort", () => {
       (presentation) => presentations.push(presentation),
     );
 
+    port.stage(captured("identical text", { captureToken: "session-1" }));
     const first = controller.analyzeActiveTextSurface();
     await flush();
+    port.stage(captured("identical text", { captureToken: "session-2" }));
     const second = controller.analyzeActiveTextSurface();
     await flush();
     provider.complete(1, "new session result");
@@ -324,9 +303,7 @@ describe("WindowsActiveTextSurfacePort", () => {
     const provider = new DeferredProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
     const controller = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(
-        nativeInvoke(async () => captured("late source")).invoke,
-      ),
+      portWith(captured("late source")),
       provider,
       (presentation) => presentations.push(presentation),
     );
@@ -346,9 +323,7 @@ describe("WindowsActiveTextSurfacePort", () => {
     const provider = new ImmediateProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
     const controller = new GlobalDesktopAssistantController(
-      new WindowsActiveTextSurfacePort(
-        nativeInvoke(async () => captured("same text")).invoke,
-      ),
+      portWith(captured("same text")),
       provider,
       (presentation) => presentations.push(presentation),
     );

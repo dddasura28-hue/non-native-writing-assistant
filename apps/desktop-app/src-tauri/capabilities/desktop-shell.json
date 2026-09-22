@@ -3,5 +3,9 @@
   "identifier": "desktop-shell",
   "description": "Loads the desktop writing shell. Fixed-purpose Rust commands handle credentials, provider settings, and provider HTTP.",
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit-to"
+  ]
 }

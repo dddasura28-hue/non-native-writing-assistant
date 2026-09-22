@@ -3,9 +3,9 @@ mod model;
 #[cfg(target_os = "windows")]
 mod uia;
 
-use model::{unavailable, WindowsCaptureUnavailableReason, WindowsTextSurfaceCaptureResponse};
+use model::unavailable;
+pub(crate) use model::{WindowsCaptureUnavailableReason, WindowsTextSurfaceCaptureResponse};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct WindowsCaptureSequence(AtomicU64);
@@ -17,16 +17,13 @@ impl WindowsCaptureSequence {
     }
 }
 
-#[tauri::command]
-pub async fn capture_active_windows_text_surface(
-    app: AppHandle,
-) -> Result<WindowsTextSurfaceCaptureResponse, String> {
-    let token = app.state::<WindowsCaptureSequence>().next_token();
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || capture_on_platform(token))
-            .await
-            .unwrap_or_else(|_| unavailable(WindowsCaptureUnavailableReason::NativeUiaUnavailable)),
-    )
+pub fn capture_active_windows_text_surface_now(
+    sequence: &WindowsCaptureSequence,
+) -> WindowsTextSurfaceCaptureResponse {
+    let token = sequence.next_token();
+    std::thread::spawn(move || capture_on_platform(token))
+        .join()
+        .unwrap_or_else(|_| unavailable(WindowsCaptureUnavailableReason::NativeUiaUnavailable))
 }
 
 #[cfg(target_os = "windows")]

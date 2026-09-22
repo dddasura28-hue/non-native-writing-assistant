@@ -24,11 +24,6 @@ import type {
   DesktopNormalizedPresentation,
   PresentDesktopAssistance,
 } from "./controller/desktop-engine-controller.js";
-import {
-  EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
-  type GlobalDesktopAssistantPresentation,
-  type PresentGlobalDesktopAssistant,
-} from "./controller/global-desktop-assistant-controller.js";
 import type { DesktopProviderSettingsView } from "./settings/desktop-settings-controller.js";
 import type { TextareaTextAnchor } from "./host/textarea-text-anchor.js";
 import "./styles.css";
@@ -94,21 +89,22 @@ class StubController implements DesktopControllerPort {
   readonly observed: TextContext[] = [];
   editPort: TextEditPort | null = null;
   readonly present: PresentDesktopAssistance;
-  readonly presentGlobal?: PresentGlobalDesktopAssistant;
   readonly onObserve?: (context: TextContext) => void;
   disposed = false;
   confirmationResult: "confirmed" | "obsolete" = "confirmed";
   acceptReplacementText: string | null = null;
+  shortcutStatus = {
+    state: "registered" as "registered" | "unavailable",
+    shortcut: "Ctrl+Alt+Space",
+  };
   readonly actions: Array<{ name: string; args: readonly unknown[] }> = [];
 
   constructor(
     present: PresentDesktopAssistance,
     onObserve?: (context: TextContext) => void,
-    presentGlobal?: PresentGlobalDesktopAssistant,
   ) {
     this.present = present;
     this.onObserve = onObserve;
-    this.presentGlobal = presentGlobal;
   }
 
   observe(context: TextContext, editPort?: TextEditPort | null): void {
@@ -141,16 +137,8 @@ class StubController implements DesktopControllerPort {
     return "accepted";
   }
 
-  async analyzeWindowsActiveTextSurface(): Promise<"unavailable"> {
-    this.actions.push({ name: "analyzeWindowsActiveTextSurface", args: [] });
-    return "unavailable";
-  }
-
-  async acceptWindowsNormalized(
-    target: DesktopNormalizedAcceptTarget,
-  ): Promise<"obsolete"> {
-    this.actions.push({ name: "acceptWindowsNormalized", args: [target] });
-    return "obsolete";
+  async getWindowsGlobalShortcutStatus() {
+    return this.shortcutStatus;
   }
 
   async addProfile(providerId: string): Promise<void> {
@@ -1301,77 +1289,32 @@ describe("desktop engine UI", () => {
     expect(instances[1]!.observed.at(-1)?.text).toBe("one pipeline");
   });
 
-  it("delays Windows capture so the user can refocus an external field", () => {
-    vi.useFakeTimers();
-    let instance!: StubController;
-    const factory: DesktopControllerFactory = (
-      present,
-      _presentSettings,
-      presentGlobal,
-    ) => {
-      instance = new StubController(present, undefined, presentGlobal);
-      return instance;
-    };
-    renderApp(factory);
-
-    const analyze = button("Analyze focused Windows field")!;
-    act(() => analyze.click());
+  it("shows the registered manual Windows shortcut without a delay harness", async () => {
+    renderApp((present) => new StubController(present));
+    await act(async () => Promise.resolve());
 
     expect(container.textContent).toContain(
-      "Focus the external Windows text field now; capture starts in 3 seconds.",
+      "Global shortcut Ctrl+Alt+Space: registered",
     );
-    expect(analyze.disabled).toBe(true);
-    expect(instance.actions).not.toContainEqual({
-      name: "analyzeWindowsActiveTextSurface",
-      args: [],
-    });
-
-    act(() => vi.advanceTimersByTime(3_000));
-
-    expect(instance.actions).toContainEqual({
-      name: "analyzeWindowsActiveTextSurface",
-      args: [],
-    });
-    expect(analyze.disabled).toBe(false);
+    expect(button("Analyze focused Windows field")).toBeUndefined();
   });
 
-  it("renders Windows external results in a separate read-only development section", () => {
+  it("keeps the standalone editor available when shortcut registration fails", async () => {
     let instance!: StubController;
-    const factory: DesktopControllerFactory = (
-      present,
-      _presentSettings,
-      presentGlobal,
-    ) => {
-      instance = new StubController(present, undefined, presentGlobal);
+    renderApp((present) => {
+      instance = new StubController(present);
+      instance.shortcutStatus = {
+        state: "unavailable",
+        shortcut: "Ctrl+Alt+Space",
+      };
       return instance;
-    };
-    renderApp(factory);
-    const externalPresentation: GlobalDesktopAssistantPresentation = {
-      ...EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
-      hostAvailable: true,
-      manualAnalysisAllowed: true,
-      sourceText: "External text only.",
-      status: "completed",
-      statusMessage: "Analysis ready",
-      assistance: {
-        active: item("External text only.", {
-          normalizedTracks: [
-            normalized("external", "External normalized wording."),
-          ],
-        }),
-        recent: [],
-      },
-    };
+    });
+    await act(async () => Promise.resolve());
 
-    act(() => instance.presentGlobal?.(externalPresentation));
-
-    const section = container.querySelector(
-      ".windows-external-development",
-    )!;
-    expect(section.textContent).toContain("Windows external-host development");
-    expect(section.textContent).toContain("External text only.");
-    expect(section.textContent).toContain("External normalized wording.");
-    expect(section.textContent).toContain("Read-only");
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Global shortcut Ctrl+Alt+Space: unavailable",
+    );
   });
 
   it("opens provider settings and can add a profile", () => {
