@@ -57,4 +57,19 @@ describe("desktop dependency boundaries", () => {
       ).toEqual([]);
     }
   });
+
+  it("keeps the future external-host boundary free of native platform APIs", () => {
+    const boundaryFiles = [
+      "apps/desktop-app/src/host/active-text-surface.ts",
+      "apps/desktop-app/src/host/fake-active-text-surface.ts",
+      "apps/desktop-app/src/controller/global-desktop-assistant-controller.ts",
+    ];
+
+    for (const relativePath of boundaryFiles) {
+      const source = readFileSync(resolve(repositoryRoot, relativePath), "utf8");
+      expect(source, relativePath).not.toMatch(
+        /@tauri-apps|navigator\.|document\.|window\.|HWND|UIAutomation|clipboard|globalShortcut/,
+      );
+    }
+  });
 });

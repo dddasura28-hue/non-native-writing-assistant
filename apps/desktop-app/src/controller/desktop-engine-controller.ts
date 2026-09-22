@@ -129,6 +129,8 @@ export interface DesktopEngineControllerOptions {
   readonly debounceMs?: number;
   readonly configuration?: AnalysisConfiguration;
   readonly configurationSource?: DesktopAnalysisConfigurationSource;
+  /** Defaults true for the owned editor; manual-only hosts set this false. */
+  readonly automaticAnalysisEnabled?: boolean;
 }
 
 export interface DesktopObservationOptions {
@@ -155,6 +157,7 @@ export class DesktopEngineController {
   readonly #configurationSource: DesktopAnalysisConfigurationSource;
   readonly #unsubscribeConfiguration: () => void;
   readonly #debounceMs: number;
+  readonly #automaticAnalysisEnabled: boolean;
   readonly #triggeredCompletionFingerprints = new Set<UnitSourceFingerprint>();
 
   #activeUnitId: string | null = null;
@@ -199,6 +202,7 @@ export class DesktopEngineController {
       () => this.#handleConfigurationChange(),
     );
     this.#debounceMs = options.debounceMs ?? DESKTOP_ANALYSIS_DEBOUNCE_MS;
+    this.#automaticAnalysisEnabled = options.automaticAnalysisEnabled ?? true;
   }
 
   observe(
@@ -216,7 +220,8 @@ export class DesktopEngineController {
     this.#acceptBlocked = false;
     this.#acceptFailureMessage = undefined;
     const suppressAutomaticAnalysis =
-      options.suppressAutomaticAnalysis === true;
+      options.suppressAutomaticAnalysis === true ||
+      !this.#automaticAnalysisEnabled;
 
     if (context.composition !== null) {
       this.#compositionBlocked = true;
@@ -251,6 +256,7 @@ export class DesktopEngineController {
       const dependencyChanged = this.#activateExplicitSelection(selection);
       this.#presentDirect();
       if (
+        !suppressAutomaticAnalysis &&
         (configurationChanged || dependencyChanged) &&
         this.#directSegment !== null &&
         findCurrentConfirmedNativeIntent(this.#directSegment) !== undefined

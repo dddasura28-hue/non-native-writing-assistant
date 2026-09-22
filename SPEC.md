@@ -92,6 +92,18 @@ The textarea remains an ordinary controlled textarea with soft wrapping. Inline 
 
 Inline Accept sends the selected variant's existing prepared identity to the desktop controller. The controller and captured `TextEditPort` perform the same dependency, source, session, generation, range, and expected-text checks used by side-panel Accept. Pointerdown does not mutate Source or its selection before those checks. Success follows the same replacement, caret, invalidation, confirmation/draft cleanup, fresh-context, and one-shot automatic-analysis suppression lifecycle without a success toast. After either success or a stale rejection, the textarea regains focus; a successful edit retains the caret established by the guarded replacement.
 
+### Global Desktop Assistant boundary
+
+Global Desktop Assistant Boundary v1 defines a desktop-host seam for future text surfaces owned by other applications. An active-surface capture contains the existing `TextContext`, truthful `HostCapabilities`, and either a host-bound guarded `TextEditPort` or no edit port. `TextContext.text` remains the exact window supplied by the host, which may be a whole control, partial surrounding text, or selected text only. Every offset is a UTF-16 offset relative to that captured string; application code receives no document-global offsets, window handles, process identity, accessibility objects, or screen geometry.
+
+Manual global analysis always starts with a fresh capture and feeds it through the existing desktop engine, context selector, writing-unit pipeline, provider, dependency checks, and presentation semantics. A selected-text-only capture uses the existing whole explicit-selection target with empty before/after context. Missing surrounding text is never invented. An unavailable host or empty capture produces a neutral state and no provider request.
+
+Capabilities determine safe behavior. Automatic realtime assistance is eligible only when composition can be observed reliably and no composition is active. If composition visibility is unavailable, an intentional manual action may analyze the exact committed/captured text, but realtime remains disabled. A read-only host may produce Native Intent and Normalized output but never receives an enabled Accept action. The owned textarea continues to declare full selection, surrounding-text, composition, and guarded-replacement capabilities.
+
+External Accept still uses the current Normalized result and the existing exact `TextReplacement`. The external adapter binds its one-shot `TextEditPort` to the exact application, control, captured text window, and opaque native session generation. Matching text is insufficient: an old port rejects after a host/session change even when the visible text is identical. The controller also invalidates old presentation actions when a new capture or provider profile supersedes them. No fuzzy relocation or recapture-and-force behavior exists.
+
+This phase provides no Windows UI Automation, macOS Accessibility, global shortcut, clipboard fallback, background monitoring, polling, global floating window, or native caret geometry. Those require later desktop adapters over this boundary.
+
 ### Desktop provider configuration
 
 The desktop settings surface supports multiple named profiles, an open model ID, enable/disable state, explicit active-profile selection, and separate credential replacement/removal. OpenAI-compatible profiles also expose their visible base URL and structured-output compatibility mode; DeepSeek uses this custom-provider path rather than a dedicated adapter. Only HTTPS endpoints are accepted, except for exact loopback HTTP endpoints used deliberately in local development. Credentials embedded in URLs are invalid.

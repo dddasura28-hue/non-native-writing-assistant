@@ -1,7 +1,6 @@
 import {
   createTextContext,
   type TextContext,
-  type TextEditPort,
 } from "@non-native-writing/application";
 import {
   useCallback,
@@ -41,9 +40,9 @@ import {
   captureTextareaTextContext,
 } from "./host/textarea-text-context-adapter.js";
 import {
-  createCapturedTextareaEditPort,
   type TextareaSessionState,
 } from "./host/textarea-text-edit-port.js";
+import { createCapturedTextareaTextSurface } from "./host/textarea-active-text-surface.js";
 import {
   calculateTextareaInlinePosition,
   measureTextareaTextAnchor,
@@ -91,7 +90,6 @@ export function App({
   const sessionToken = useRef(Symbol("desktop-textarea-session"));
   const generation = useRef(0);
   const composition = useRef(new TextareaCompositionTracker());
-  const capturedEditPort = useRef<TextEditPort | null>(null);
 
   const currentSession = useCallback(
     (): TextareaSessionState => ({
@@ -112,7 +110,7 @@ export function App({
         context: TextContext,
         suppressAutomaticAnalysis = false,
       ): void => {
-        const editPort = createCapturedTextareaEditPort({
+        const surface = createCapturedTextareaTextSurface({
           target: textarea,
           context,
           session: currentSession(),
@@ -123,9 +121,8 @@ export function App({
             publish(freshContext, true);
           },
         });
-        capturedEditPort.current = editPort;
-        setTextContext(context);
-        controller.current?.observe(context, editPort, {
+        setTextContext(surface.context);
+        controller.current?.observe(surface.context, surface.editPort, {
           suppressAutomaticAnalysis,
         });
       };
