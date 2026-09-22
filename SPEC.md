@@ -102,7 +102,19 @@ Capabilities determine safe behavior. Automatic realtime assistance is eligible 
 
 External Accept still uses the current Normalized result and the existing exact `TextReplacement`. The external adapter binds its one-shot `TextEditPort` to the exact application, control, captured text window, and opaque native session generation. Matching text is insufficient: an old port rejects after a host/session change even when the visible text is identical. The controller also invalidates old presentation actions when a new capture or provider profile supersedes them. No fuzzy relocation or recapture-and-force behavior exists.
 
-This phase provides no Windows UI Automation, macOS Accessibility, global shortcut, clipboard fallback, background monitoring, polling, global floating window, or native caret geometry. Those require later desktop adapters over this boundary.
+Windows External Host Adapter v1 is the first real adapter over this boundary. It supports deliberate manual capture and analysis of a focused external Windows text control through UI Automation. It does not provide realtime global assistance, a production global overlay, a global shortcut, or external replacement.
+
+### Experimental Windows external-host capture
+
+Every manual Windows capture obtains the focused UI Automation element again. The adapter rejects this application's own process, password/protected controls, disabled or non-focusable elements, disappeared elements, and elements whose text plus caret/selection cannot be represented truthfully. It never returns a window title, process path, process ID, runtime ID, native handle, accessibility object, or unrelated application content to the writing engine or provider.
+
+TextPattern2 caret data is preferred when it is active. TextPattern supplies document text and selection ranges. One non-empty contiguous selection becomes an exact selected-text-only window; a degenerate selection becomes a caret. Multiple disjoint selections are never concatenated: when TextPattern2 provides a reliable caret, the adapter degrades to a caret-centered capture with selection observation disabled, and otherwise reports the control as unsupported. Cursor and selection offsets are UTF-16 offsets relative to the exact returned text.
+
+Cursor captures use a deterministic bounded UIA range of up to 8,192 UIA character units on each side of the caret. The returned string is exactly the text read from that range, so shorter provider ranges remain truthful. Selected captures contain exactly the selected range and claim no surrounding-text capability. ValuePattern availability is detected, but ValuePattern-only controls are not captured because that pattern does not expose a reliable cursor or selection.
+
+UI Automation v1 reports `canObserveComposition: false`, so automatic cross-application analysis remains disabled. Manual analysis is supported for committed text intentionally captured by the user. TextPattern readability does not imply write safety, and this adapter reports `canReplaceText: false` with no `TextEditPort`. ValuePattern writing is deferred because arbitrary providers do not prove atomic partial replacement, deterministic caret placement, and rollback-safe post-write verification required by the existing guarded-edit contract.
+
+The standalone app includes a clearly labeled development section. Its manual Analyze action waits three seconds so the user can return focus to an external field before the native command performs one fresh capture. This is a deliberate one-shot timer, not polling or event monitoring. Protected text is never analyzed, and captured text is not logged or persisted. There is no clipboard, SendKeys, SendInput, simulated typing, global hotkey, UIA event subscription, background monitoring, system tray workflow, or floating global assistant in this phase.
 
 ### Desktop provider configuration
 

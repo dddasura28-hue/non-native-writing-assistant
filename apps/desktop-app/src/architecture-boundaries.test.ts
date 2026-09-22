@@ -72,4 +72,30 @@ describe("desktop dependency boundaries", () => {
       );
     }
   });
+
+  it("keeps Windows UIA behind one fixed-purpose native command", () => {
+    const adapter = readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/desktop-app/src/native/windows-active-text-surface.ts",
+      ),
+      "utf8",
+    );
+    expect(adapter).toContain('"capture_active_windows_text_surface"');
+    expect(adapter).not.toMatch(
+      /HWND|processId|windowTitle|runtimeId|AutomationElement|SendInput|SendKeys|clipboard/,
+    );
+
+    const rustRoot = resolve(
+      repositoryRoot,
+      "apps/desktop-app/src-tauri/src/windows",
+    );
+    const rustSource = readdirSync(rustRoot)
+      .filter((name) => name.endsWith(".rs"))
+      .map((name) => readFileSync(resolve(rustRoot, name), "utf8"))
+      .join("\n");
+    expect(rustSource).not.toMatch(
+      /SendInput|SendKeys|OpenClipboard|SetClipboardData|RegisterHotKey/,
+    );
+  });
 });

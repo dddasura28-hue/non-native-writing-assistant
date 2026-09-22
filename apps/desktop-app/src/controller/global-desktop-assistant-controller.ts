@@ -58,7 +58,7 @@ export type GlobalDesktopAssistantControllerOptions = Pick<
   "configuration" | "configurationSource"
 >;
 
-const UNAVAILABLE_PRESENTATION: GlobalDesktopAssistantPresentation =
+export const EMPTY_GLOBAL_DESKTOP_ASSISTANCE: GlobalDesktopAssistantPresentation =
   Object.freeze({
     hostAvailable: false,
     readOnly: true,
@@ -98,7 +98,7 @@ export class GlobalDesktopAssistantController {
     this.#provider = provider;
     this.#present = present;
     this.#options = options;
-    this.#present(UNAVAILABLE_PRESENTATION);
+    this.#present(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
   }
 
   async analyzeActiveTextSurface(): Promise<GlobalDesktopManualAnalysisResult> {
@@ -109,7 +109,7 @@ export class GlobalDesktopAssistantController {
     const invocation = ++this.#invocation;
     this.#clearCurrentCapture();
     this.#present(Object.freeze({
-      ...UNAVAILABLE_PRESENTATION,
+      ...EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
       status: "capturing",
       statusMessage: "Capturing active text",
     }));
@@ -128,7 +128,7 @@ export class GlobalDesktopAssistantController {
       return "obsolete";
     }
     if (capture === null) {
-      this.#present(UNAVAILABLE_PRESENTATION);
+      this.#present(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
       return "unavailable";
     }
 
