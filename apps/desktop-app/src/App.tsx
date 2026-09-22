@@ -6,12 +6,14 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
   type CompositionEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type Ref,
   type FormEvent,
   type SyntheticEvent,
 } from "react";
@@ -43,6 +45,12 @@ import {
   type TextareaSessionState,
 } from "./host/textarea-text-edit-port.js";
 import {
+  calculateTextareaInlinePosition,
+  measureTextareaTextAnchor,
+  type TextareaTextAnchor,
+  type TextareaInlinePosition,
+} from "./host/textarea-text-anchor.js";
+import {
   EMPTY_DESKTOP_PROVIDER_SETTINGS_VIEW,
   isCustomProvider,
   type DesktopProviderProfileView,
@@ -58,9 +66,13 @@ const EMPTY_CONTEXT = createTextContext({
 
 export interface AppProps {
   readonly createController?: DesktopControllerFactory;
+  readonly measureTextAnchor?: typeof measureTextareaTextAnchor;
 }
 
-export function App({ createController = createDesktopController }: AppProps) {
+export function App({
+  createController = createDesktopController,
+  measureTextAnchor = measureTextareaTextAnchor,
+}: AppProps) {
   const [editorText, setEditorText] = useState("");
   const [textContext, setTextContext] = useState<TextContext>(EMPTY_CONTEXT);
   const [assistance, setAssistance] =
@@ -68,7 +80,13 @@ export function App({ createController = createDesktopController }: AppProps) {
   const [providerSettings, setProviderSettings] =
     useState<DesktopProviderSettingsView>(EMPTY_DESKTOP_PROVIDER_SETTINGS_VIEW);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [inlineAnchor, setInlineAnchor] =
+    useState<TextareaTextAnchor | null>(null);
+  const [inlinePosition, setInlinePosition] =
+    useState<TextareaInlinePosition | null>(null);
   const editor = useRef<HTMLTextAreaElement | null>(null);
+  const writingPane = useRef<HTMLElement | null>(null);
+  const inlineCard = useRef<HTMLElement | null>(null);
   const controller = useRef<DesktopControllerPort | null>(null);
   const sessionToken = useRef(Symbol("desktop-textarea-session"));
   const generation = useRef(0);
@@ -173,6 +191,141 @@ export function App({ createController = createDesktopController }: AppProps) {
     capture(event.currentTarget, true);
   };
 
+  const handleAcceptNormalized = useCallback(
+    async (target: DesktopNormalizedAcceptTarget): Promise<void> => {
+      try {
+        await (
+          controller.current?.acceptNormalized(target) ??
+          Promise.resolve("obsolete")
+        );
+      } finally {
+        editor.current?.focus({ preventScroll: true });
+      }
+    },
+    [],
+  );
+
+  const inlineModeEligible =
+    assistance.active?.targetKind === "cursor-unit" &&
+    textContext.selection === null &&
+    textContext.composition === null;
+  const inlineItem = inlineModeEligible ? assistance.active : null;
+  const inlineStatusMessage = inlineItem?.inlineStatusMessage;
+  const primaryInlineVariant =
+    inlineStatusMessage === undefined && inlineItem?.status === "completed"
+    ? inlineItem.normalizedTracks[0] ?? null
+    : null;
+  const inlineContentAvailable =
+    primaryInlineVariant !== null || inlineStatusMessage !== undefined;
+  const inlineContentKey = inlineStatusMessage ?? [
+    primaryInlineVariant?.id ?? "none",
+    primaryInlineVariant?.text ?? "",
+    primaryInlineVariant?.label ?? "",
+    primaryInlineVariant?.canAccept === true ? "accept" : "read-only",
+  ].join(":");
+
+  const measureInlineAnchor = useCallback((): void => {
+    const textarea = editor.current;
+    const pane = writingPane.current;
+    if (
+      textarea === null ||
+      pane === null ||
+      !inlineModeEligible ||
+      textarea.value !== editorText
+    ) {
+      setInlineAnchor(null);
+      return;
+    }
+
+    const anchor = measureTextAnchor(
+      textarea,
+      pane,
+      textContext.cursorOffset,
+    );
+    if (anchor === null || !anchor.visible) {
+      setInlineAnchor(null);
+      return;
+    }
+    setInlineAnchor(anchor);
+  }, [
+    editorText,
+    inlineModeEligible,
+    measureTextAnchor,
+    textContext.cursorOffset,
+  ]);
+
+  useLayoutEffect(() => {
+    measureInlineAnchor();
+  }, [measureInlineAnchor]);
+
+  useEffect(() => {
+    if (!inlineModeEligible) {
+      return;
+    }
+    const resize = (): void => measureInlineAnchor();
+    globalThis.addEventListener("resize", resize);
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(resize);
+    if (editor.current !== null) {
+      observer?.observe(editor.current);
+    }
+    if (writingPane.current !== null) {
+      observer?.observe(writingPane.current);
+    }
+    const fonts = editor.current?.ownerDocument.fonts;
+    fonts?.addEventListener("loadingdone", resize);
+    return () => {
+      globalThis.removeEventListener("resize", resize);
+      fonts?.removeEventListener("loadingdone", resize);
+      observer?.disconnect();
+    };
+  }, [inlineModeEligible, measureInlineAnchor]);
+
+  const placeInlineCard = useCallback((): void => {
+    const anchor = inlineAnchor;
+    const pane = writingPane.current;
+    const card = inlineCard.current;
+    if (
+      anchor === null ||
+      pane === null ||
+      card === null ||
+      !inlineContentAvailable
+    ) {
+      setInlinePosition(null);
+      return;
+    }
+    const cardRect = card.getBoundingClientRect();
+    setInlinePosition(calculateTextareaInlinePosition(
+      anchor,
+      { width: pane.clientWidth, height: pane.clientHeight },
+      {
+        width: cardRect.width || card.offsetWidth,
+        height: cardRect.height || card.offsetHeight,
+      },
+    ));
+  }, [inlineAnchor, inlineContentAvailable]);
+
+  useLayoutEffect(() => {
+    if (!inlineContentAvailable || inlineAnchor === null) {
+      setInlinePosition(null);
+      return;
+    }
+    placeInlineCard();
+    const card = inlineCard.current;
+    if (card === null || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(placeInlineCard);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [
+    inlineAnchor,
+    inlineContentAvailable,
+    inlineContentKey,
+    placeInlineCard,
+  ]);
+
   const selectionStatus =
     textContext.selection === null
       ? "None"
@@ -213,7 +366,11 @@ export function App({ createController = createDesktopController }: AppProps) {
       ) : null}
 
       <div className="workspace">
-        <section className="writing-pane" aria-labelledby="writing-heading">
+        <section
+          ref={writingPane}
+          className="writing-pane"
+          aria-labelledby="writing-heading"
+        >
           <div className="pane-heading">
             <div>
               <p className="pane-kicker">Source</p>
@@ -238,7 +395,17 @@ export function App({ createController = createDesktopController }: AppProps) {
             onCompositionStart={handleCompositionStart}
             onCompositionUpdate={handleCompositionUpdate}
             onCompositionEnd={handleCompositionEnd}
+            onScroll={measureInlineAnchor}
           />
+          {inlineItem !== null && inlineContentAvailable && inlineAnchor !== null ? (
+            <InlineAssistance
+              elementRef={inlineCard}
+              primaryVariant={primaryInlineVariant}
+              statusMessage={inlineStatusMessage}
+              position={inlinePosition}
+              onAccept={handleAcceptNormalized}
+            />
+          ) : null}
           <aside className="host-status" aria-label="Editor host status">
             <span>Caret {textContext.cursorOffset}</span>
             <span>Selection {selectionStatus}</span>
@@ -261,6 +428,7 @@ export function App({ createController = createDesktopController }: AppProps) {
               item={assistance.active}
               active
               controller={controller.current}
+              onAcceptNormalized={handleAcceptNormalized}
             />
           )}
 
@@ -275,6 +443,7 @@ export function App({ createController = createDesktopController }: AppProps) {
                   item={item}
                   active={false}
                   controller={null}
+                  onAcceptNormalized={null}
                 />
               ))
             )}
@@ -534,10 +703,14 @@ function AssistanceItem({
   item,
   active,
   controller,
+  onAcceptNormalized,
 }: {
   readonly item: DesktopAssistanceItem;
   readonly active: boolean;
   readonly controller: DesktopControllerPort | null;
+  readonly onAcceptNormalized:
+    | ((target: DesktopNormalizedAcceptTarget) => Promise<void>)
+    | null;
 }) {
   return (
     <article className={`assistance-result${active ? " is-active" : ""}`}>
@@ -560,7 +733,7 @@ function AssistanceItem({
       {active ? (
         <NormalizedSection
           variants={item.normalizedTracks}
-          controller={controller}
+          onAccept={onAcceptNormalized}
         />
       ) : (
         <TrackSection
@@ -645,12 +818,66 @@ function nativeIntentDraftKey(intent: DesktopNativeIntentPresentation): string {
   ].join(":");
 }
 
+function InlineAssistance({
+  elementRef,
+  primaryVariant,
+  statusMessage,
+  position,
+  onAccept,
+}: {
+  readonly elementRef: Ref<HTMLElement>;
+  readonly primaryVariant: DesktopNormalizedPresentation | null;
+  readonly statusMessage: string | undefined;
+  readonly position: TextareaInlinePosition | null;
+  readonly onAccept: (target: DesktopNormalizedAcceptTarget) => Promise<void>;
+}) {
+  return (
+    <aside
+      ref={elementRef}
+      className="inline-assistance"
+      aria-label="Inline assistance"
+      data-placement={position?.placement}
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        visibility: position === null ? "hidden" : undefined,
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {primaryVariant !== null ? (
+        <>
+          <p className="inline-assistance-label">Normalized</p>
+          <p className="inline-assistance-text">{primaryVariant.text}</p>
+          {primaryVariant.canAccept && primaryVariant.acceptTarget !== null ? (
+            <button
+              className="primary-button inline-accept"
+              type="button"
+              aria-label={`Accept inline Normalized variant ${primaryVariant.label ?? 1}`}
+              onClick={() =>
+                runAcceptAction(onAccept, primaryVariant.acceptTarget)
+              }
+            >
+              Accept
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <p className="inline-assistance-state" role="status">
+          {statusMessage}
+        </p>
+      )}
+    </aside>
+  );
+}
+
 function NormalizedSection({
   variants,
-  controller,
+  onAccept,
 }: {
   readonly variants: readonly DesktopNormalizedPresentation[];
-  readonly controller: DesktopControllerPort | null;
+  readonly onAccept:
+    | ((target: DesktopNormalizedAcceptTarget) => Promise<void>)
+    | null;
 }) {
   return (
     <section className="assistance-card">
@@ -668,7 +895,7 @@ function NormalizedSection({
                 disabled={!variant.canAccept || variant.acceptTarget === null}
                 aria-label={`Accept Normalized variant ${variant.label ?? index + 1}`}
                 onClick={() =>
-                  runAcceptAction(controller, variant.acceptTarget)
+                  runAcceptAction(onAccept, variant.acceptTarget)
                 }
               >
                 Accept
@@ -682,13 +909,13 @@ function NormalizedSection({
 }
 
 function runAcceptAction(
-  controller: DesktopControllerPort | null,
+  onAccept: ((target: DesktopNormalizedAcceptTarget) => Promise<void>) | null,
   target: DesktopNormalizedAcceptTarget | null,
 ): void {
   if (target === null) {
     return;
   }
-  void controller?.acceptNormalized(target).catch(() => undefined);
+  void onAccept?.(target).catch(() => undefined);
 }
 
 function TrackSection({

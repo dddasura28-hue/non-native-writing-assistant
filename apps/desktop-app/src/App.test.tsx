@@ -25,6 +25,7 @@ import type {
   PresentDesktopAssistance,
 } from "./controller/desktop-engine-controller.js";
 import type { DesktopProviderSettingsView } from "./settings/desktop-settings-controller.js";
+import type { TextareaTextAnchor } from "./host/textarea-text-anchor.js";
 import "./styles.css";
 
 const desktopStyles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
@@ -34,9 +35,11 @@ function item(
   options: Partial<DesktopAssistanceItem> = {},
 ): DesktopAssistanceItem {
   return Object.freeze({
+    targetKind: "cursor-unit",
     sourceText,
     status: "completed",
     statusMessage: "Analysis ready",
+    inlineStatusMessage: undefined,
     nativeIntent: null,
     nativeIntentTracks: Object.freeze([]),
     normalizedTracks: Object.freeze([]),
@@ -178,21 +181,38 @@ describe("desktop engine UI", () => {
     vi.unstubAllGlobals();
   });
 
-  function renderApp(factory?: DesktopControllerFactory): void {
+  function renderApp(
+    factory?: DesktopControllerFactory,
+    measureTextAnchor?: (
+      textarea: HTMLTextAreaElement,
+      container: HTMLElement,
+      caretOffset: number,
+    ) => TextareaTextAnchor | null,
+  ): void {
     const resolvedFactory =
       factory ?? ((present: PresentDesktopAssistance) => new StubController(present));
-    act(() => root.render(<App createController={resolvedFactory} />));
+    act(() => root.render(
+      <App
+        createController={resolvedFactory}
+        measureTextAnchor={measureTextAnchor}
+      />,
+    ));
   }
 
   function renderWithPresentation(
     presentation: DesktopAssistancePresentation,
+    measureTextAnchor?: (
+      textarea: HTMLTextAreaElement,
+      container: HTMLElement,
+      caretOffset: number,
+    ) => TextareaTextAnchor | null,
   ): StubController {
     let instance!: StubController;
     const factory: DesktopControllerFactory = (present) => {
       instance = new StubController(present);
       return instance;
     };
-    renderApp(factory);
+    renderApp(factory, measureTextAnchor);
     act(() => instance.present(presentation));
     return instance;
   }
@@ -373,11 +393,241 @@ describe("desktop engine UI", () => {
       active: item("Current source", {
         status: "idle",
         statusMessage: "Source changed; suggestion is no longer current.",
+        inlineStatusMessage: "Source changed; suggestion is no longer current.",
+        normalizedTracks: Object.freeze([
+          normalized("stale-normalized", "Old wording"),
+        ]),
       }),
       recent: [],
-    });
+    }, visibleTextAnchor);
     expect(container.querySelector('[role="status"]')?.textContent).toBe(
       "Source changed; suggestion is no longer current.",
+    );
+    const inline = container.querySelector('[aria-label="Inline assistance"]')!;
+    expect(inline.textContent).toBe(
+      "Source changed; suggestion is no longer current.",
+    );
+    expect(inline.textContent).not.toContain("Old wording");
+    expect(inline.querySelector("button")).toBeNull();
+  });
+
+  it("renders only the primary current Normalized variant inline", () => {
+    const target = normalizedAcceptTarget();
+    renderWithPresentation({
+      active: item("Current source.", {
+        normalizedTracks: Object.freeze([
+          normalized("primary", "Primary wording.", {
+            label: "Primary",
+            canAccept: true,
+            acceptTarget: target,
+          }),
+          normalized("alternative", "Alternative wording.", {
+            label: "Alternative",
+            canAccept: true,
+            acceptTarget: normalizedAcceptTarget({
+              trackId: "alternative" as never,
+            }),
+          }),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    const inline = container.querySelector('[aria-label="Inline assistance"]')!;
+    expect(inline.textContent).toContain("Primary wording.");
+    expect(inline.textContent).not.toContain("Alternative wording.");
+    expect(inline.querySelector<HTMLButtonElement>(
+      '[aria-label="Accept inline Normalized variant Primary"]',
+    )?.disabled).toBe(false);
+    expect(container.querySelector(".assistance-pane")?.textContent)
+      .toContain("Alternative wording.");
+    const sideButtons = container.querySelectorAll<HTMLButtonElement>(
+      ".assistance-pane .normalized-accept",
+    );
+    expect(sideButtons[0]?.disabled).toBe(false);
+    expect(container.querySelector(".assistance-pane")?.textContent)
+      .toContain("Primary wording.");
+    expect(desktopStyles).toMatch(
+      /\.inline-assistance\s*\{[^}]*position:\s*absolute;[^}]*max-block-size:\s*10rem;/s,
+    );
+  });
+
+  it("uses the existing Accept identity from the inline action", () => {
+    const target = normalizedAcceptTarget();
+    const instance = renderWithPresentation({
+      active: item("Old.", {
+        normalizedTracks: Object.freeze([
+          normalized("normalized-one", "New.", {
+            canAccept: true,
+            acceptTarget: target,
+          }),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    act(() => container.querySelector<HTMLButtonElement>(
+      '[aria-label^="Accept inline Normalized"]',
+    )?.click());
+
+    expect(instance.actions).toContainEqual({
+      name: "acceptNormalized",
+      args: [target],
+    });
+  });
+
+  it("shows analyzing without stale inline wording", () => {
+    renderWithPresentation({
+      active: item("Current source", {
+        status: "analyzing",
+        statusMessage: "Analyzing…",
+        inlineStatusMessage: "Analyzing…",
+        normalizedTracks: Object.freeze([
+          normalized("stale", "Stale wording"),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    const inline = container.querySelector('[aria-label="Inline assistance"]')!;
+    expect(inline.textContent).toBe("Analyzing…");
+    expect(inline.textContent).not.toContain("Stale wording");
+  });
+
+  it("removes stale inline wording when the active presentation changes", () => {
+    const instance = renderWithPresentation({
+      active: item("Old source", {
+        normalizedTracks: Object.freeze([
+          normalized("current", "Current wording"),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+    expect(container.querySelector('[aria-label="Inline assistance"]')?.textContent)
+      .toContain("Current wording");
+
+    act(() => instance.present({
+      active: item("New source", {
+        status: "idle",
+        statusMessage: "Waiting for a complete thought",
+      }),
+      recent: [],
+    }));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+  });
+
+  it.each([
+    ["empty editor", { active: null, recent: [] }],
+    ["blank separator", { active: null, recent: [] }],
+  ])("hides inline assistance for %s", (_name, presentation) => {
+    renderWithPresentation(presentation, visibleTextAnchor);
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+  });
+
+  it("hides inline assistance for an explicit selection target", () => {
+    renderWithPresentation({
+      active: item("Selected source", {
+        targetKind: "explicit-selection",
+        normalizedTracks: Object.freeze([
+          normalized("selection", "Selected wording", {
+            canAccept: true,
+            acceptTarget: normalizedAcceptTarget({ kind: "selection" }),
+          }),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+    expect(container.querySelector(".assistance-pane")?.textContent)
+      .toContain("Selected wording");
+  });
+
+  it("suppresses inline assistance during composition and restores it after compositionend", () => {
+    renderWithPresentation({
+      active: item("A😀B", {
+        normalizedTracks: Object.freeze([
+          normalized("emoji", "A🙂B"),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    act(() => enterText(editor, "A😀B"));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).not.toBeNull();
+
+    act(() => editor.dispatchEvent(new CompositionEvent(
+      "compositionstart",
+      { bubbles: true, data: "文" },
+    )));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+
+    act(() => editor.dispatchEvent(new CompositionEvent(
+      "compositionupdate",
+      { bubbles: true, data: "文字" },
+    )));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+
+    act(() => editor.dispatchEvent(new CompositionEvent(
+      "compositionend",
+      { bubbles: true, data: "文" },
+    )));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).not.toBeNull();
+  });
+
+  it("keeps inline failure output compact and provider-detail free", () => {
+    renderWithPresentation({
+      active: item("Source", {
+        status: "failed",
+        statusMessage: "Provider request failed",
+        inlineStatusMessage: "Assistance unavailable",
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    const inline = container.querySelector('[aria-label="Inline assistance"]')!;
+    expect(inline.textContent).toBe("Assistance unavailable");
+    expect(inline.textContent).not.toContain("Provider request failed");
+  });
+
+  it("keeps configuration-required detail in the side panel and hides inline", () => {
+    renderWithPresentation({
+      active: item("Source", {
+        status: "failed",
+        statusMessage: "Configuration required",
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+    expect(container.querySelector(".assistance-pane")?.textContent)
+      .toContain("Configuration required");
+  });
+
+  it("never creates inline cards for Recent Assistance", () => {
+    renderWithPresentation({
+      active: null,
+      recent: [item("Recent.", {
+        normalizedTracks: Object.freeze([
+          normalized("recent", "Recent wording", {
+            canAccept: true,
+            acceptTarget: normalizedAcceptTarget(),
+          }),
+        ]),
+      })],
+    }, visibleTextAnchor);
+
+    expect(container.querySelectorAll('[aria-label="Inline assistance"]'))
+      .toHaveLength(0);
+    expect(container.querySelector(".recent-assistance")?.textContent)
+      .toContain("Recent wording");
+    expect(container.querySelector(".recent-assistance .normalized-accept"))
+      .toBeNull();
+    expect(desktopStyles).toMatch(
+      /\.recent-assistance \.assistance-card\s*\{[^}]*background:\s*transparent;/s,
+    );
+    expect(desktopStyles).toMatch(
+      /\.primary-button:focus-visible,[\s\S]*outline:\s*3px solid/s,
     );
   });
 
@@ -452,6 +702,39 @@ describe("desktop engine UI", () => {
     expect(draft.wrap).toBe("soft");
     expect(button("Confirm")).not.toBeUndefined();
     expect(button("Reset Draft")).not.toBeUndefined();
+  });
+
+  it("does not overwrite an in-progress Native Intent draft when inline wording updates", () => {
+    const targetIntent = nativeIntent("Initial intent");
+    const instance = renderWithPresentation({
+      active: item("Source.", {
+        nativeIntent: targetIntent,
+        normalizedTracks: Object.freeze([
+          normalized("first", "First current wording."),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      '[aria-label="Native Intent draft"]',
+    )!;
+    act(() => enterText(draft, "My unfinished intent draft"));
+
+    act(() => instance.present({
+      active: item("Source.", {
+        nativeIntent: targetIntent,
+        normalizedTracks: Object.freeze([
+          normalized("second", "New authoritative wording."),
+        ]),
+      }),
+      recent: [],
+    }));
+
+    expect(draft.value).toBe("My unfinished intent draft");
+    expect(container.querySelector('[aria-label="Inline assistance"]')?.textContent)
+      .toContain("New authoritative wording.");
+    expect(container.querySelector(".assistance-pane")?.textContent)
+      .toContain("New authoritative wording.");
   });
 
   it("keeps draft editing local and confirms the exact text", () => {
@@ -616,16 +899,25 @@ describe("desktop engine UI", () => {
 
   it("updates assistance on cursor navigation without mutating editor text", () => {
     let instance!: StubController;
+    const measure = vi.fn(visibleTextAnchor);
     const factory: DesktopControllerFactory = (present) => {
       instance = new StubController(present, (observed) => {
+        const sourceText = observed.cursorOffset < 5 ? "First." : "Second.";
         present({
-          active: item(observed.cursorOffset < 5 ? "First." : "Second."),
+          active: item(sourceText, {
+            normalizedTracks: Object.freeze([
+              normalized(
+                `normalized-${sourceText}`,
+                `Normalized ${sourceText}`,
+              ),
+            ]),
+          }),
           recent: [],
         });
       });
       return instance;
     };
-    renderApp(factory);
+    renderApp(factory, measure);
     const editor = container.querySelector("textarea")!;
     act(() => enterText(editor, "First. Second."));
     const exactText = editor.value;
@@ -635,13 +927,309 @@ describe("desktop engine UI", () => {
       editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "ArrowLeft" }));
     });
     expect(container.querySelector(".is-active")?.textContent).toContain("First.");
+    expect(container.querySelector('[aria-label="Inline assistance"]')?.textContent)
+      .toContain("Normalized First.");
 
+    const measurementsBeforeMove = measure.mock.calls.length;
     act(() => {
       editor.setSelectionRange(9, 9);
       editor.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector(".is-active")?.textContent).toContain("Second.");
+    expect(container.querySelector('[aria-label="Inline assistance"]')?.textContent)
+      .toContain("Normalized Second.");
+    expect(measure.mock.calls.length).toBeGreaterThan(measurementsBeforeMove);
     expect(editor.value).toBe(exactText);
+    expect(instance.actions).toEqual([]);
+  });
+
+  it("remeasures on textarea scroll and hides or restores an offscreen anchor", () => {
+    let visible = true;
+    const measure = vi.fn(() => ({
+      ...visibleTextAnchor(),
+      visible,
+    }));
+    renderWithPresentation({
+      active: item("Scrollable source.", {
+        normalizedTracks: Object.freeze([
+          normalized("scroll", "Near-caret wording"),
+        ]),
+      }),
+      recent: [],
+    }, measure);
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    expect(container.querySelector('[aria-label="Inline assistance"]')).not.toBeNull();
+
+    visible = false;
+    act(() => editor.dispatchEvent(new Event("scroll", { bubbles: true })));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+
+    visible = true;
+    act(() => editor.dispatchEvent(new Event("scroll", { bubbles: true })));
+    expect(container.querySelector('[aria-label="Inline assistance"]')).not.toBeNull();
+    expect(measure.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("requests remeasurement when the editor or pane resizes", () => {
+    const observers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Element[];
+    }> = [];
+    class FakeResizeObserver {
+      readonly record: { callback: ResizeObserverCallback; targets: Element[] };
+      constructor(callback: ResizeObserverCallback) {
+        this.record = { callback, targets: [] };
+        observers.push(this.record);
+      }
+      observe(target: Element): void {
+        this.record.targets.push(target);
+      }
+      disconnect(): void {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const measure = vi.fn(visibleTextAnchor);
+    renderWithPresentation({
+      active: item("Resizable source.", {
+        normalizedTracks: Object.freeze([
+          normalized("resize", "Responsive wording"),
+        ]),
+      }),
+      recent: [],
+    }, measure);
+    const editor = container.querySelector("#writing-editor")!;
+    const pane = container.querySelector(".writing-pane")!;
+    const initialMeasurements = measure.mock.calls.length;
+    const geometryObserver = observers.find(
+      (observer) =>
+        observer.targets.includes(editor) && observer.targets.includes(pane),
+    );
+
+    act(() => geometryObserver?.callback([], {} as ResizeObserver));
+
+    expect(measure.mock.calls.length).toBeGreaterThan(initialMeasurements);
+    const afterObserver = measure.mock.calls.length;
+    act(() => globalThis.dispatchEvent(new Event("resize")));
+    expect(measure.mock.calls.length).toBeGreaterThan(afterObserver);
+  });
+
+  it("repositions for actual card dimensions without remeasuring the caret", () => {
+    const observers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Element[];
+    }> = [];
+    class FakeResizeObserver {
+      readonly record: { callback: ResizeObserverCallback; targets: Element[] };
+      constructor(callback: ResizeObserverCallback) {
+        this.record = { callback, targets: [] };
+        observers.push(this.record);
+      }
+      observe(target: Element): void {
+        this.record.targets.push(target);
+      }
+      disconnect(): void {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const measure = vi.fn(() => ({
+      left: 340,
+      top: 160,
+      lineHeight: 24,
+      visible: true,
+    }));
+    const instance = renderWithPresentation({
+      active: item("Source.", {
+        normalizedTracks: Object.freeze([
+          normalized("short", "Short wording."),
+        ]),
+      }),
+      recent: [],
+    }, measure);
+    const pane = container.querySelector<HTMLElement>(".writing-pane")!;
+    const card = container.querySelector<HTMLElement>(
+      '[aria-label="Inline assistance"]',
+    )!;
+    Object.defineProperties(pane, {
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 250 },
+    });
+    let cardHeight = 40;
+    vi.spyOn(card, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 180,
+      bottom: cardHeight,
+      width: 180,
+      height: cardHeight,
+      toJSON: () => ({}),
+    }));
+    const notifyCardResize = (): void => {
+      const observer = [...observers].reverse().find((candidate) =>
+        candidate.targets.includes(card));
+      observer?.callback([], {} as ResizeObserver);
+    };
+
+    act(notifyCardResize);
+    expect(card.dataset.placement).toBe("below");
+    expect(card.style.left).toBe("212px");
+    const measurementsBeforeContentChange = measure.mock.calls.length;
+    const longText = "A long normalized suggestion ".repeat(30);
+
+    act(() => instance.present({
+      active: item("Source.", {
+        normalizedTracks: Object.freeze([
+          normalized("long", longText),
+        ]),
+      }),
+      recent: [],
+    }));
+    cardHeight = 100;
+    act(notifyCardResize);
+
+    expect(measure).toHaveBeenCalledTimes(measurementsBeforeContentChange);
+    expect(card.dataset.placement).toBe("above");
+    expect(card.style.top).toBe("54px");
+    expect(card.textContent).toContain(longText);
+    expect(desktopStyles).toMatch(
+      /\.inline-assistance-text\s*\{[^}]*max-block-size:\s*5rem;[^}]*overflow:\s*hidden;/s,
+    );
+  });
+
+  it("preserves Source and its selection during inline pointerdown", () => {
+    const target = normalizedAcceptTarget();
+    const instance = renderWithPresentation({
+      active: item("Old.", {
+        normalizedTracks: Object.freeze([
+          normalized("pointer", "New.", {
+            canAccept: true,
+            acceptTarget: target,
+          }),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+    const editor = container.querySelector<HTMLTextAreaElement>("#writing-editor")!;
+    act(() => enterText(editor, "Old."));
+    editor.setSelectionRange(2, 2);
+    const accept = container.querySelector<HTMLButtonElement>(
+      '[aria-label^="Accept inline Normalized"]',
+    )!;
+
+    act(() => accept.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+
+    expect(editor.value).toBe("Old.");
+    expect(editor.selectionStart).toBe(2);
+    expect(editor.selectionEnd).toBe(2);
+    expect(instance.actions).toEqual([]);
+    expect(accept.tagName).toBe("BUTTON");
+    expect(accept.type).toBe("button");
+  });
+
+  it("applies inline Accept through the guarded port, clears the overlay, and restores editor focus", async () => {
+    let instance!: StubController;
+    const target = normalizedAcceptTarget({
+      range: Object.freeze({ start: 3, end: 7 }),
+    });
+    const factory: DesktopControllerFactory = (present) => {
+      instance = new StubController(present, (observed) => {
+        if (observed.text === "AA New wording. ZZ") {
+          present({ active: null, recent: [] });
+        }
+      });
+      instance.acceptReplacementText = "New wording.";
+      return instance;
+    };
+    renderApp(factory, visibleTextAnchor);
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    act(() => enterText(editor, "AA Old. ZZ"));
+    act(() => instance.present({
+      active: item("Old.", {
+        nativeIntent: nativeIntent("旧含义", "confirmed"),
+        normalizedTracks: Object.freeze([
+          normalized("normalized-one", "New wording.", {
+            canAccept: true,
+            acceptTarget: target,
+          }),
+        ]),
+      }),
+      recent: [],
+    }));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label^="Accept inline Normalized"]',
+      )?.click();
+      await Promise.resolve();
+    });
+
+    expect(editor.value).toBe("AA New wording. ZZ");
+    expect(editor.selectionStart).toBe(3 + "New wording.".length);
+    expect(editor.selectionEnd).toBe(editor.selectionStart);
+    expect(document.activeElement).toBe(editor);
+    expect(container.querySelector('[aria-label="Inline assistance"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Native Intent draft"]')).toBeNull();
+    expect(container.textContent).not.toContain("Accepted successfully");
+  });
+
+  it("cannot apply a stale inline target to newer Source", async () => {
+    let instance!: StubController;
+    renderApp((present) => {
+      instance = new StubController(present);
+      instance.acceptReplacementText = "New.";
+      return instance;
+    }, visibleTextAnchor);
+    const editor = container.querySelector("#writing-editor") as HTMLTextAreaElement;
+    act(() => enterText(editor, "Old."));
+    act(() => instance.present({
+      active: item("Old.", {
+        normalizedTracks: Object.freeze([
+          normalized("old", "New.", {
+            canAccept: true,
+            acceptTarget: normalizedAcceptTarget(),
+          }),
+        ]),
+      }),
+      recent: [],
+    }));
+    const staleButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label^="Accept inline Normalized"]',
+    )!;
+
+    act(() => enterText(editor, "Newer user text."));
+    await act(async () => {
+      staleButton.click();
+      await Promise.resolve();
+    });
+
+    expect(editor.value).toBe("Newer user text.");
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("removes inline output when a dependency refresh invalidates the result", () => {
+    const instance = renderWithPresentation({
+      active: item("Profile source.", {
+        normalizedTracks: Object.freeze([
+          normalized("profile-a", "Profile A wording"),
+        ]),
+      }),
+      recent: [],
+    }, visibleTextAnchor);
+    expect(container.querySelector('[aria-label="Inline assistance"]')?.textContent)
+      .toContain("Profile A wording");
+
+    act(() => instance.present({
+      active: item("Profile source.", {
+        status: "analyzing",
+        statusMessage: "Analyzing…",
+        inlineStatusMessage: "Analyzing…",
+        normalizedTracks: Object.freeze([]),
+      }),
+      recent: [],
+    }));
+
+    const inline = container.querySelector('[aria-label="Inline assistance"]')!;
+    expect(inline.textContent).toBe("Analyzing…");
+    expect(inline.textContent).not.toContain("Profile A wording");
   });
 
   it("preserves mixed-language input and explicit soft wrapping", () => {
@@ -858,6 +1446,15 @@ function normalizedAcceptTarget(
     range: Object.freeze({ start: 0, end: 4 }),
     expectedText: "Old.",
     ...overrides,
+  });
+}
+
+function visibleTextAnchor(): TextareaTextAnchor {
+  return Object.freeze({
+    left: 160,
+    top: 180,
+    lineHeight: 24,
+    visible: true,
   });
 }
 

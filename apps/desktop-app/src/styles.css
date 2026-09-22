@@ -86,6 +86,13 @@ textarea {
   color: var(--text);
 }
 
+.primary-button:focus-visible,
+.secondary-button:focus-visible,
+.danger-button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .primary-button {
   border-color: var(--accent);
   background: var(--accent);
@@ -221,6 +228,7 @@ button:disabled {
 }
 
 .writing-pane {
+  position: relative;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
@@ -345,6 +353,47 @@ button:disabled {
   margin-top: 0.65rem;
 }
 
+.inline-assistance {
+  position: absolute;
+  z-index: 4;
+  inline-size: min(22rem, calc(100% - 1rem));
+  max-inline-size: calc(100% - 1rem);
+  max-block-size: 10rem;
+  padding: 0.65rem 0.7rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--surface);
+  box-shadow: 0 0.25rem 0.8rem rgb(0 0 0 / 10%);
+  pointer-events: auto;
+}
+
+.inline-assistance-label,
+.inline-assistance-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.inline-assistance-text {
+  max-block-size: 5rem;
+  margin: 0.35rem 0 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.inline-accept {
+  margin-top: 0.5rem;
+  padding-block: 0.32rem;
+  font-size: 0.78rem;
+}
+
 .native-intent-heading {
   align-items: center;
   display: flex;
@@ -386,6 +435,16 @@ button:disabled {
 .recent-assistance > h3 {
   margin: 0 0 0.8rem;
   font-size: 0.9rem;
+}
+
+.recent-assistance .assistance-card {
+  padding: 0.75rem;
+  background: transparent;
+}
+
+.recent-assistance .assistance-card h3,
+.recent-assistance .assistance-card p {
+  font-size: 0.8rem;
 }
 
 .sr-only {

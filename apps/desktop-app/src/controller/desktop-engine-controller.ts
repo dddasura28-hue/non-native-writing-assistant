@@ -110,9 +110,11 @@ export type DesktopNativeIntentConfirmationResult = "confirmed" | "obsolete";
 export type DesktopNormalizedAcceptResult = "accepted" | "obsolete";
 
 export interface DesktopAssistanceItem {
+  readonly targetKind: "cursor-unit" | "explicit-selection";
   readonly sourceText: string;
   readonly status: DesktopAnalysisStatus;
   readonly statusMessage: string;
+  readonly inlineStatusMessage: string | undefined;
   readonly nativeIntent: DesktopNativeIntentPresentation | null;
   readonly nativeIntentTracks: readonly DesktopAssistanceTrack[];
   readonly normalizedTracks: readonly DesktopNormalizedPresentation[];
@@ -138,6 +140,7 @@ export type PresentDesktopAssistance = (
 ) => void;
 
 const EMPTY_TRACK_IDS: readonly TrackId[] = Object.freeze([]);
+const STALE_ACCEPT_MESSAGE = "Source changed; suggestion is no longer current.";
 export const EMPTY_DESKTOP_ASSISTANCE: DesktopAssistancePresentation =
   Object.freeze({ active: null, recent: Object.freeze([]) });
 
@@ -653,15 +656,21 @@ export class DesktopEngineController {
       .map((track) =>
         presentNormalizedTrack(track, this.#createDirectAcceptTarget(track)),
       );
+    const directStatusMessage =
+      this.#acceptFailureMessage ??
+      this.#directStatusMessage ??
+      statusMessage(this.#directStatus);
     this.#present(
       Object.freeze({
         active: Object.freeze({
+          targetKind: "explicit-selection" as const,
           sourceText: this.#directSegment.sourceText,
           status: this.#directStatus,
-          statusMessage:
-            this.#acceptFailureMessage ??
-            this.#directStatusMessage ??
-            statusMessage(this.#directStatus),
+          statusMessage: directStatusMessage,
+          inlineStatusMessage: inlineStatusMessage(
+            this.#directStatus,
+            directStatusMessage,
+          ),
           nativeIntent,
           nativeIntentTracks:
             nativeIntent === null
@@ -871,8 +880,7 @@ export class DesktopEngineController {
       return "obsolete";
     }
     this.#acceptBlocked = true;
-    this.#acceptFailureMessage =
-      "Source changed; suggestion is no longer current.";
+    this.#acceptFailureMessage = STALE_ACCEPT_MESSAGE;
     if (this.#explicitSelection) {
       this.#presentDirect();
     } else {
@@ -950,10 +958,13 @@ function presentIncrementalItem(
         : item.status === "failed"
           ? "failed"
           : "idle";
+  const resolvedStatusMessage = failureMessage ?? statusMessage(status);
   return Object.freeze({
+    targetKind: "cursor-unit" as const,
     sourceText: item.sourceText,
     status,
-    statusMessage: failureMessage ?? statusMessage(status),
+    statusMessage: resolvedStatusMessage,
+    inlineStatusMessage: inlineStatusMessage(status, resolvedStatusMessage),
     nativeIntent:
       item.nativeIntent === null
         ? null
@@ -1100,4 +1111,26 @@ function statusMessage(status: DesktopAnalysisStatus): string {
     default:
       return "Waiting for a complete thought";
   }
+}
+
+function inlineStatusMessage(
+  status: DesktopAnalysisStatus,
+  detailedMessage: string,
+): string | undefined {
+  if (detailedMessage === STALE_ACCEPT_MESSAGE) {
+    return STALE_ACCEPT_MESSAGE;
+  }
+  if (status === "analyzing") {
+    return "Analyzing…";
+  }
+  if (status !== "failed") {
+    return undefined;
+  }
+  if (
+    detailedMessage === "Configuration required" ||
+    detailedMessage === "Credential required"
+  ) {
+    return undefined;
+  }
+  return "Assistance unavailable";
 }

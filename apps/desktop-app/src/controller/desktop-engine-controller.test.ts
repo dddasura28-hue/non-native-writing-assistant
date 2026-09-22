@@ -312,6 +312,7 @@ describe("DesktopEngineController", () => {
     await vi.advanceTimersByTimeAsync(699);
     expect(provider.requests).toHaveLength(2);
     expect(latest().active?.sourceText).toBe("One.");
+    expect(latest().active?.targetKind).toBe("cursor-unit");
     expect(latest().active?.nativeIntentTracks[0]?.text).toBe("native:One.");
   });
 
@@ -352,6 +353,7 @@ describe("DesktopEngineController", () => {
 
     expect(provider.requests).toHaveLength(1);
     expect(latest().active?.sourceText).toBe("Select one. Select two.");
+    expect(latest().active?.targetKind).toBe("explicit-selection");
     expect(latest().recent).toHaveLength(0);
   });
 
@@ -447,6 +449,7 @@ describe("DesktopEngineController", () => {
 
     expect(latest().active?.status).toBe("failed");
     expect(latest().active?.statusMessage).toContain("failed");
+    expect(latest().active?.inlineStatusMessage).toBe("Assistance unavailable");
     expect(latest().recent[0]?.nativeIntentTracks[0]?.text).toBe("native:One.");
   });
 
@@ -618,6 +621,7 @@ describe("DesktopEngineController", () => {
     controller.observe(context("First."));
     await flush();
     expect(latest().active?.statusMessage).toBe("Configuration required");
+    expect(latest().active?.inlineStatusMessage).toBeUndefined();
     expect(JSON.stringify(latest())).not.toContain("internal configuration detail");
     controller.observe(context("Second."));
     expect(failure.calls).toBe(2);
@@ -889,6 +893,9 @@ describe("DesktopEngineController", () => {
     expect(host.current.text).toBe("This method have serious problem.");
     expect(host.replaceCount).toBe(0);
     expect(latest().active?.statusMessage).toBe(
+      "Source changed; suggestion is no longer current.",
+    );
+    expect(latest().active?.inlineStatusMessage).toBe(
       "Source changed; suggestion is no longer current.",
     );
     expect(latest().active?.normalizedTracks.every((track) => !track.canAccept))
