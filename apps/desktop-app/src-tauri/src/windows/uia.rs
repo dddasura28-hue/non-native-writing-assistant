@@ -1,3 +1,6 @@
+use super::geometry::{
+    adjacent_caret_anchor, selection_anchor, AdjacentCaretSide, ExternalTextAnchor,
+};
 use super::model::{
     build_capture, unavailable, ElementFacts, NativeTextRange,
     WindowsCaptureUnavailableReason as Unavailable, WindowsTextSurfaceCaptureResponse,
@@ -5,6 +8,10 @@ use super::model::{
 use windows::core::{Interface, BOOL, BSTR};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    SAFEARRAY,
+};
+use windows::Win32::System::Ole::{
+    SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetElemsize,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2,
@@ -14,6 +21,7 @@ use windows::Win32::UI::Accessibility::{
 };
 
 const CONTEXT_CHARACTERS_PER_SIDE: i32 = 8_192;
+const MAX_BOUNDING_VALUES: usize = 256 * 4;
 
 pub fn capture_active_text_surface(token: String) -> WindowsTextSurfaceCaptureResponse {
     let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -78,15 +86,15 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
         }
         [selection] => {
             let anchor = caret.as_ref().unwrap_or(selection);
-            capture_around_caret(anchor, true, token)?
+            capture_around_caret(anchor, true, true, token)?
         }
         [] => {
             let anchor = caret.as_ref().ok_or(Unavailable::SelectionUnavailable)?;
-            capture_around_caret(anchor, false, token)?
+            capture_around_caret(anchor, false, true, token)?
         }
         _ => {
             let anchor = caret.as_ref().ok_or(Unavailable::MultipleSelection)?;
-            capture_around_caret(anchor, false, token)?
+            capture_around_caret(anchor, false, false, token)?
         }
     };
 
@@ -125,6 +133,8 @@ fn capture_exact_selection(
     caret: Option<&IUIAutomationTextRange>,
     token: String,
 ) -> Result<super::model::WindowsTextSurfaceCapture, Unavailable> {
+    let geometry =
+        bounding_rectangle_values(selection).and_then(|values| selection_anchor(&values));
     let text = range_text(selection)?;
     let text_len = super::model::utf16_len(&text);
     let cursor = caret
@@ -141,19 +151,24 @@ fn capture_exact_selection(
         true,
         false,
         token,
+        geometry,
     )
 }
 
 fn capture_around_caret(
-    anchor: &IUIAutomationTextRange,
+    caret_range: &IUIAutomationTextRange,
     can_observe_selection: bool,
+    include_geometry: bool,
     token: String,
 ) -> Result<super::model::WindowsTextSurfaceCapture, Unavailable> {
-    let window = unsafe { anchor.Clone() }.map_err(|_| Unavailable::ElementDisappeared)?;
+    let geometry = include_geometry
+        .then(|| caret_anchor(caret_range))
+        .flatten();
+    let window = unsafe { caret_range.Clone() }.map_err(|_| Unavailable::ElementDisappeared)?;
     unsafe {
         window.MoveEndpointByRange(
             TextPatternRangeEndpoint_Start,
-            anchor,
+            caret_range,
             TextPatternRangeEndpoint_Start,
         )
     }
@@ -161,7 +176,7 @@ fn capture_around_caret(
     unsafe {
         window.MoveEndpointByRange(
             TextPatternRangeEndpoint_End,
-            anchor,
+            caret_range,
             TextPatternRangeEndpoint_End,
         )
     }
@@ -183,7 +198,7 @@ fn capture_around_caret(
     }
     .map_err(|_| Unavailable::ElementDisappeared)?;
 
-    let cursor = offset_within(&window, anchor, TextPatternRangeEndpoint_Start)?;
+    let cursor = offset_within(&window, caret_range, TextPatternRangeEndpoint_Start)?;
     build_capture(
         range_text(&window)?,
         cursor,
@@ -191,7 +206,85 @@ fn capture_around_caret(
         can_observe_selection,
         true,
         token,
+        geometry,
     )
+}
+
+fn caret_anchor(caret: &IUIAutomationTextRange) -> Option<ExternalTextAnchor> {
+    adjacent_range(caret, AdjacentCaretSide::Previous)
+        .and_then(|range| anchor_from_adjacent_range(&range, AdjacentCaretSide::Previous))
+        .or_else(|| {
+            adjacent_range(caret, AdjacentCaretSide::Next)
+                .and_then(|range| anchor_from_adjacent_range(&range, AdjacentCaretSide::Next))
+        })
+}
+
+fn adjacent_range(
+    caret: &IUIAutomationTextRange,
+    side: AdjacentCaretSide,
+) -> Option<IUIAutomationTextRange> {
+    let range = unsafe { caret.Clone() }.ok()?;
+    let moved = match side {
+        AdjacentCaretSide::Previous => unsafe {
+            range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1)
+        }
+        .ok()?,
+        AdjacentCaretSide::Next => {
+            unsafe { range.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, 1) }
+                .ok()?
+        }
+    };
+    let expected = match side {
+        AdjacentCaretSide::Previous => -1,
+        AdjacentCaretSide::Next => 1,
+    };
+    (moved == expected).then_some(range)
+}
+
+fn anchor_from_adjacent_range(
+    range: &IUIAutomationTextRange,
+    side: AdjacentCaretSide,
+) -> Option<ExternalTextAnchor> {
+    let text = range_text(range).ok()?;
+    let values = bounding_rectangle_values(range)?;
+    adjacent_caret_anchor(&values, &text, side)
+}
+
+struct OwnedSafeArray(*mut SAFEARRAY);
+
+impl Drop for OwnedSafeArray {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            let _ = unsafe { SafeArrayDestroy(self.0) };
+        }
+    }
+}
+
+fn bounding_rectangle_values(range: &IUIAutomationTextRange) -> Option<Vec<f64>> {
+    let raw = unsafe { range.GetBoundingRectangles() }.ok()?;
+    if raw.is_null() {
+        return None;
+    }
+    let array = OwnedSafeArray(raw);
+    if unsafe { SafeArrayGetDim(array.0) } != 1
+        || unsafe { SafeArrayGetElemsize(array.0) } as usize != std::mem::size_of::<f64>()
+    {
+        return None;
+    }
+    let bounds = unsafe { (*array.0).rgsabound[0] };
+    let count = bounds.cElements as usize;
+    if count > MAX_BOUNDING_VALUES {
+        return None;
+    }
+    let mut values = Vec::with_capacity(count);
+    for offset in 0..count {
+        let index = bounds.lLbound.checked_add(i32::try_from(offset).ok()?)?;
+        let mut value = 0.0_f64;
+        unsafe { SafeArrayGetElement(array.0, &index, std::ptr::from_mut(&mut value).cast()) }
+            .ok()?;
+        values.push(value);
+    }
+    Some(values)
 }
 
 fn is_degenerate(range: &IUIAutomationTextRange) -> Result<bool, Unavailable> {

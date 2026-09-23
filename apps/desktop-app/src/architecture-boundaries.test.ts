@@ -105,7 +105,7 @@ describe("desktop dependency boundaries", () => {
       .map((name) => readFileSync(resolve(rustRoot, name), "utf8"))
       .join("\n");
     expect(rustSource).not.toMatch(
-      /SendInput|SendKeys|OpenClipboard|SetClipboardData|RegisterHotKey/,
+      /SendInput|SendKeys|OpenClipboard|SetClipboardData|RegisterHotKey|\.Select\s*\(|ScrollIntoView/,
     );
     const shortcutSource = readFileSync(
       resolve(
@@ -115,6 +115,8 @@ describe("desktop dependency boundaries", () => {
       "utf8",
     );
     expect(shortcutSource).not.toMatch(/set_focus\s*\(/u);
+    expect(shortcutSource).toContain("monitor_from_point");
+    expect(shortcutSource).toContain("PhysicalPosition");
   });
 
   it("configures one hidden non-focusable reusable global assistant window", () => {

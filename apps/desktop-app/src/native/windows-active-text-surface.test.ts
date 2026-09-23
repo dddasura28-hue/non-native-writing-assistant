@@ -26,7 +26,7 @@ function captured(
     NativeWindowsCaptureResponse,
     { readonly status: "captured" }
   >["capture"]> = {},
-): NativeWindowsCaptureResponse {
+): Extract<NativeWindowsCaptureResponse, { readonly status: "captured" }> {
   return {
     status: "captured",
     capture: {
@@ -134,6 +134,25 @@ describe("WindowsActiveTextSurfacePort", () => {
     expect(capture).not.toHaveProperty("captureToken");
   });
 
+  it("keeps optional native geometry out of TextContext", async () => {
+    const response = captured("English 中文\nA😀B", {
+      anchor: {
+        physicalX: 640,
+        physicalY: 360,
+        physicalWidth: 1,
+        physicalHeight: 22,
+        confidence: "approximate",
+      },
+    });
+    const port = portWith(response);
+
+    const capture = await port.capture();
+
+    expect(response.capture.anchor).toMatchObject({ physicalX: 640 });
+    expect(JSON.stringify(capture?.context)).not.toContain("physicalX");
+    expect(capture?.context.text).toBe("English 中文\nA😀B");
+  });
+
   it("preserves an exact selected-only capture window", async () => {
     const response = captured("This have issue. It cost too much.", {
       cursorOffset: 34,
@@ -224,7 +243,15 @@ describe("WindowsActiveTextSurfacePort", () => {
   });
 
   it("strips native metadata before constructing the model request", async () => {
-    const response = captured("External source") as NativeWindowsCaptureResponse & {
+    const response = captured("External source", {
+      anchor: {
+        physicalX: 100,
+        physicalY: 200,
+        physicalWidth: 1,
+        physicalHeight: 20,
+        confidence: "approximate",
+      },
+    }) as NativeWindowsCaptureResponse & {
       capture: { processId: number; windowTitle: string; runtimeId: number[] };
     };
     Object.assign(response.capture, {
@@ -246,6 +273,8 @@ describe("WindowsActiveTextSurfacePort", () => {
     expect(request).not.toContain("windowTitle");
     expect(request).not.toContain("runtimeId");
     expect(request).not.toContain("opaque-capture-1");
+    expect(request).not.toContain("physicalX");
+    expect(request).not.toContain("approximate");
   });
 
   it("fresh manual actions always invoke a fresh Windows capture", async () => {

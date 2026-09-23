@@ -10,9 +10,15 @@ import {
   presentationForCapturedShortcut,
   type WindowsGlobalCaptureEvent,
 } from "./windows-global-shortcut-bridge.js";
-import type { NativeWindowsCaptureResponse } from "./windows-active-text-surface.js";
+import type {
+  NativeExternalTextAnchor,
+  NativeWindowsCaptureResponse,
+} from "./windows-active-text-surface.js";
 
-function capture(text: string): NativeWindowsCaptureResponse {
+function capture(
+  text: string,
+  anchor?: NativeExternalTextAnchor,
+): Extract<NativeWindowsCaptureResponse, { readonly status: "captured" }> {
   return {
     status: "captured",
     capture: {
@@ -26,6 +32,7 @@ function capture(text: string): NativeWindowsCaptureResponse {
         canProvideSurroundingText: true,
       },
       captureToken: "opaque",
+      ...(anchor === undefined ? {} : { anchor }),
     },
   };
 }
@@ -158,5 +165,56 @@ describe("Windows global shortcut bridge", () => {
       state: "unavailable",
       shortcut: "Ctrl+Alt+Space",
     });
+  });
+
+  it("maps optional geometry with its invocation and strips malformed geometry", async () => {
+    let handler: ((event: { payload: unknown }) => void) | null = null;
+    const listen = vi.fn(async (_name, next) => {
+      handler = next;
+      return () => undefined;
+    });
+    const bridge = new TauriWindowsGlobalShortcutBridge(
+      listen,
+      vi.fn(async () => undefined),
+      vi.fn(async () => {
+        throw new Error("unused native command");
+      }),
+    );
+    const captures: WindowsGlobalCaptureEvent[] = [];
+    await bridge.listenForCaptures((event) => captures.push(event));
+    const validAnchor: NativeExternalTextAnchor = {
+      physicalX: 1440,
+      physicalY: 700,
+      physicalWidth: 1,
+      physicalHeight: 24,
+      confidence: "approximate",
+    };
+    const emit = handler as unknown as (event: { payload: unknown }) => void;
+
+    emit({ payload: { invocationId: 11, response: capture("current", validAnchor) } });
+    emit({
+      payload: {
+        invocationId: 12,
+        response: capture("still analyzable", {
+          ...validAnchor,
+          physicalWidth: Number.NaN,
+        }),
+      },
+    });
+
+    expect(captures[0]).toMatchObject({
+      invocationId: 11,
+      response: { status: "captured", capture: { anchor: validAnchor } },
+    });
+    const presentation = presentationForCapturedShortcut(captures[0]!);
+    expect(presentation.invocationId).toBe(11);
+    expect(JSON.stringify(presentation)).not.toContain("physicalX");
+    expect(captures[1]).toMatchObject({
+      invocationId: 12,
+      response: { status: "captured", capture: { text: "still analyzable" } },
+    });
+    if (captures[1]?.response.status === "captured") {
+      expect(captures[1].response.capture.anchor).toBeUndefined();
+    }
   });
 });

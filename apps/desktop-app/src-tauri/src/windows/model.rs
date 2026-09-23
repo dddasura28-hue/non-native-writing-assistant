@@ -1,3 +1,4 @@
+use super::geometry::ExternalTextAnchor;
 use serde::Serialize;
 use std::fmt;
 
@@ -40,6 +41,8 @@ pub struct WindowsTextSurfaceCapture {
     pub selection: Option<NativeTextRange>,
     pub capabilities: NativeHostCapabilities,
     pub capture_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<ExternalTextAnchor>,
 }
 
 impl fmt::Debug for WindowsTextSurfaceCapture {
@@ -105,6 +108,7 @@ pub fn build_capture(
     can_observe_selection: bool,
     can_provide_surrounding_text: bool,
     capture_token: String,
+    anchor: Option<ExternalTextAnchor>,
 ) -> Result<WindowsTextSurfaceCapture, WindowsCaptureUnavailableReason> {
     let text_len = utf16_len(&text);
     if cursor_offset > text_len
@@ -125,6 +129,7 @@ pub fn build_capture(
             can_provide_surrounding_text,
         },
         capture_token,
+        anchor: anchor.filter(|value| value.is_valid()),
     })
 }
 
@@ -135,6 +140,7 @@ pub fn unavailable(reason: WindowsCaptureUnavailableReason) -> WindowsTextSurfac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::windows::geometry::ExternalTextAnchorConfidence;
 
     #[derive(Debug, PartialEq, Eq)]
     enum GuardedWriteError {
@@ -264,14 +270,22 @@ mod tests {
     fn utf16_offsets_count_emoji_as_two_code_units() {
         assert_eq!(utf16_len("A😀B"), 4);
         let capture =
-            build_capture("A😀B".into(), 3, None, true, true, "capture-1".into()).unwrap();
+            build_capture("A😀B".into(), 3, None, true, true, "capture-1".into(), None).unwrap();
         assert_eq!(capture.cursor_offset, 3);
     }
 
     #[test]
     fn degenerate_caret_maps_without_a_selection() {
-        let capture =
-            build_capture("hello".into(), 2, None, true, true, "capture-1".into()).unwrap();
+        let capture = build_capture(
+            "hello".into(),
+            2,
+            None,
+            true,
+            true,
+            "capture-1".into(),
+            None,
+        )
+        .unwrap();
         assert_eq!(capture.cursor_offset, 2);
         assert_eq!(capture.selection, None);
     }
@@ -286,6 +300,7 @@ mod tests {
             true,
             false,
             "capture-1".into(),
+            None,
         )
         .unwrap();
         assert_eq!(capture.selection, Some(range));
@@ -300,6 +315,7 @@ mod tests {
             false,
             true,
             "capture-1".into(),
+            None,
         )
         .unwrap();
         assert!(!capture.capabilities.can_observe_selection);
@@ -308,8 +324,16 @@ mod tests {
 
     #[test]
     fn text_pattern_capture_is_read_only_and_composition_unknown() {
-        let capture =
-            build_capture("read only".into(), 4, None, true, true, "capture-1".into()).unwrap();
+        let capture = build_capture(
+            "read only".into(),
+            4,
+            None,
+            true,
+            true,
+            "capture-1".into(),
+            None,
+        )
+        .unwrap();
         assert!(!capture.capabilities.can_replace_text);
         assert!(!capture.capabilities.can_observe_composition);
     }
@@ -401,6 +425,7 @@ mod tests {
             true,
             true,
             "secret-token".into(),
+            None,
         )
         .unwrap();
         assert!(!format!("{capture:?}").contains(secret_source));
@@ -408,5 +433,39 @@ mod tests {
             !format!("{:?}", WindowsCaptureUnavailableReason::ElementDisappeared)
                 .contains(secret_source)
         );
+    }
+
+    #[test]
+    fn invalid_geometry_does_not_invalidate_the_text_capture() {
+        let capture = build_capture(
+            "English 中文\nA😀B".into(),
+            14,
+            None,
+            true,
+            true,
+            "capture-geometry-failure".into(),
+            Some(ExternalTextAnchor {
+                physical_x: f64::NAN,
+                physical_y: 20.0,
+                physical_width: 1.0,
+                physical_height: 18.0,
+                confidence: ExternalTextAnchorConfidence::Approximate,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(capture.text, "English 中文\nA😀B");
+        assert_eq!(capture.anchor, None);
+    }
+
+    #[test]
+    fn protected_unavailable_payload_exposes_neither_text_nor_geometry() {
+        let payload =
+            serde_json::to_value(unavailable(WindowsCaptureUnavailableReason::ProtectedField))
+                .unwrap();
+        assert_eq!(payload["status"], "unavailable");
+        assert_eq!(payload["reason"], "protected-field");
+        assert!(payload.get("capture").is_none());
+        assert!(payload.get("anchor").is_none());
     }
 }

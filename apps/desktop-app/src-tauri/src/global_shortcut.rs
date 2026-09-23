@@ -1,3 +1,7 @@
+use crate::windows::geometry::{
+    bottom_right_position, logical_gap_to_physical, place_near_anchor, rescale_physical_size,
+    AssistantPhysicalSize, ExternalTextAnchor, PhysicalWorkArea,
+};
 use crate::windows::{
     capture_active_windows_text_surface_now, WindowsCaptureSequence,
     WindowsTextSurfaceCaptureResponse,
@@ -7,13 +11,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Mutex,
 };
-use tauri::{App, AppHandle, Emitter, Manager, PhysicalPosition, Runtime, State};
+use tauri::{App, AppHandle, Emitter, Manager, PhysicalPosition, Runtime, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const ASSISTANT_WINDOW_LABEL: &str = "global-assistant";
 const CAPTURE_EVENT: &str = "windows-global-capture";
 const SHORTCUT_LABEL: &str = "Ctrl+Alt+Space";
 const WINDOW_MARGIN: i32 = 20;
+const WINDOW_GAP_LOGICAL: f64 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -70,12 +75,6 @@ struct GlobalCaptureEvent {
     response: WindowsTextSurfaceCaptureResponse,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WindowAction {
-    Show,
-    Hide,
-}
-
 pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, shortcut, event| {
@@ -124,74 +123,110 @@ fn handle_shortcut<R: Runtime>(app: &AppHandle<R>) {
             let _ = app.emit_to(ASSISTANT_WINDOW_LABEL, CAPTURE_EVENT, &payload);
             let _ = app.emit_to("main", CAPTURE_EVENT, &payload);
         },
-        |action| apply_window_action(app, action),
+        |response| apply_window_action(app, response),
     );
 }
 
 fn dispatch_capture(
     capture: impl FnOnce() -> WindowsTextSurfaceCaptureResponse,
     notify: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
-    update_window: impl FnOnce(WindowAction),
+    update_window: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
 ) {
     let response = capture();
-    let action = if matches!(response, WindowsTextSurfaceCaptureResponse::Captured { .. }) {
-        WindowAction::Show
-    } else {
-        WindowAction::Hide
-    };
     notify(&response);
-    update_window(action);
+    update_window(&response);
 }
 
-fn apply_window_action<R: Runtime>(app: &AppHandle<R>, action: WindowAction) {
+fn apply_window_action<R: Runtime>(
+    app: &AppHandle<R>,
+    response: &WindowsTextSurfaceCaptureResponse,
+) {
     let Some(window) = app.get_webview_window(ASSISTANT_WINDOW_LABEL) else {
         return;
     };
 
     let _ = window.hide();
-    if action == WindowAction::Hide {
+    let WindowsTextSurfaceCaptureResponse::Captured { capture } = response else {
         return;
-    }
+    };
 
-    if let (Ok(Some(monitor)), Ok(size)) = (window.primary_monitor(), window.outer_size()) {
-        let work_area = monitor.work_area();
-        let position = bottom_right_position(
-            work_area.position.x,
-            work_area.position.y,
-            work_area.size.width,
-            work_area.size.height,
-            size.width,
-            size.height,
-            WINDOW_MARGIN,
-        );
-        let _ = window.set_position(PhysicalPosition::new(position.0, position.1));
+    if let Ok(size) = window.outer_size() {
+        let assistant = AssistantPhysicalSize {
+            width: size.width,
+            height: size.height,
+        };
+        let position = capture
+            .anchor
+            .and_then(|anchor| near_anchor_position(&window, anchor, assistant))
+            .or_else(|| fallback_position(&window, assistant));
+        if let Some(position) = position {
+            let _ = window.set_position(PhysicalPosition::new(position.0, position.1));
+        }
     }
     let _ = window.show();
 }
 
-fn bottom_right_position(
-    work_x: i32,
-    work_y: i32,
-    work_width: u32,
-    work_height: u32,
-    window_width: u32,
-    window_height: u32,
-    margin: i32,
-) -> (i32, i32) {
-    let available_x = work_width.saturating_sub(window_width) as i64;
-    let available_y = work_height.saturating_sub(window_height) as i64;
-    let x = i64::from(work_x) + available_x - i64::from(margin);
-    let y = i64::from(work_y) + available_y - i64::from(margin);
-    (
-        x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+fn near_anchor_position<R: Runtime>(
+    window: &WebviewWindow<R>,
+    anchor: ExternalTextAnchor,
+    current_assistant: AssistantPhysicalSize,
+) -> Option<(i32, i32)> {
+    let (center_x, center_y) = anchor.center();
+    let monitor = window.monitor_from_point(center_x, center_y).ok()??;
+    let gap = logical_gap_to_physical(WINDOW_GAP_LOGICAL, monitor.scale_factor())?;
+    let assistant = assistant_size_for_monitor(window, current_assistant, monitor.scale_factor());
+    let work_area = monitor.work_area();
+    place_near_anchor(
+        anchor,
+        assistant,
+        PhysicalWorkArea {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        gap,
     )
+}
+
+fn fallback_position<R: Runtime>(
+    window: &WebviewWindow<R>,
+    current_assistant: AssistantPhysicalSize,
+) -> Option<(i32, i32)> {
+    let monitor = window.primary_monitor().ok()??;
+    let assistant = assistant_size_for_monitor(window, current_assistant, monitor.scale_factor());
+    let work_area = monitor.work_area();
+    Some(bottom_right_position(
+        PhysicalWorkArea {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        assistant,
+        WINDOW_MARGIN,
+    ))
+}
+
+fn assistant_size_for_monitor<R: Runtime>(
+    window: &WebviewWindow<R>,
+    current: AssistantPhysicalSize,
+    target_scale_factor: f64,
+) -> AssistantPhysicalSize {
+    window
+        .scale_factor()
+        .ok()
+        .and_then(|current_scale_factor| {
+            rescale_physical_size(current, current_scale_factor, target_scale_factor)
+        })
+        .unwrap_or(current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::windows::WindowsCaptureUnavailableReason;
+    use crate::windows::geometry::ExternalTextAnchorConfidence;
+    use crate::windows::{build_capture, WindowsCaptureUnavailableReason};
     use std::cell::RefCell;
 
     #[test]
@@ -213,15 +248,20 @@ mod tests {
 
     #[test]
     fn failed_capture_hides_instead_of_reusing_a_previous_result() {
-        let action = RefCell::new(None);
+        let captured = RefCell::new(None);
         dispatch_capture(
             || WindowsTextSurfaceCaptureResponse::Unavailable {
                 reason: WindowsCaptureUnavailableReason::ProtectedField,
             },
             |_| {},
-            |next| *action.borrow_mut() = Some(next),
+            |response| {
+                *captured.borrow_mut() = Some(matches!(
+                    response,
+                    WindowsTextSurfaceCaptureResponse::Captured { .. }
+                ))
+            },
         );
-        assert_eq!(*action.borrow(), Some(WindowAction::Hide));
+        assert_eq!(*captured.borrow(), Some(false));
     }
 
     #[test]
@@ -252,8 +292,62 @@ mod tests {
     #[test]
     fn bottom_right_position_uses_the_monitor_work_area() {
         assert_eq!(
-            bottom_right_position(-1920, 0, 1920, 1040, 420, 320, 20),
+            bottom_right_position(
+                PhysicalWorkArea {
+                    x: -1920,
+                    y: 0,
+                    width: 1920,
+                    height: 1040,
+                },
+                AssistantPhysicalSize {
+                    width: 420,
+                    height: 320,
+                },
+                20,
+            ),
             (-440, 700),
         );
+    }
+
+    #[test]
+    fn one_frozen_capture_supplies_both_event_and_window_geometry() {
+        let anchor = ExternalTextAnchor {
+            physical_x: 320.0,
+            physical_y: 240.0,
+            physical_width: 1.0,
+            physical_height: 20.0,
+            confidence: ExternalTextAnchorConfidence::Approximate,
+        };
+        let response = WindowsTextSurfaceCaptureResponse::Captured {
+            capture: build_capture(
+                "captured source".into(),
+                8,
+                None,
+                true,
+                true,
+                "capture-1".into(),
+                Some(anchor),
+            )
+            .unwrap(),
+        };
+        let notified = RefCell::new(None);
+        let positioned = RefCell::new(None);
+
+        dispatch_capture(
+            || response,
+            |response| {
+                if let WindowsTextSurfaceCaptureResponse::Captured { capture } = response {
+                    *notified.borrow_mut() = capture.anchor;
+                }
+            },
+            |response| {
+                if let WindowsTextSurfaceCaptureResponse::Captured { capture } = response {
+                    *positioned.borrow_mut() = capture.anchor;
+                }
+            },
+        );
+
+        assert_eq!(*notified.borrow(), Some(anchor));
+        assert_eq!(*positioned.borrow(), Some(anchor));
     }
 }

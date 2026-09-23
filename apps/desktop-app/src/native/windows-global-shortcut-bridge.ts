@@ -10,7 +10,10 @@ import {
   invokeNative,
   type NativeInvoke,
 } from "./native-command-client.js";
-import type { NativeWindowsCaptureResponse } from "./windows-active-text-surface.js";
+import {
+  parseNativeWindowsCaptureResponse,
+  type NativeWindowsCaptureResponse,
+} from "./windows-active-text-surface.js";
 
 export const WINDOWS_GLOBAL_CAPTURE_EVENT = "windows-global-capture";
 export const GLOBAL_ASSISTANT_PRESENTATION_EVENT =
@@ -89,8 +92,9 @@ implements WindowsGlobalShortcutBridge {
     listener: (event: WindowsGlobalCaptureEvent) => void,
   ): Promise<UnlistenFn> {
     return this.#listen<unknown>(WINDOWS_GLOBAL_CAPTURE_EVENT, (event) => {
-      if (isWindowsGlobalCaptureEvent(event.payload)) {
-        listener(event.payload);
+      const capture = parseWindowsGlobalCaptureEvent(event.payload);
+      if (capture !== null) {
+        listener(capture);
       }
     });
   }
@@ -206,9 +210,9 @@ export function createFloatingAssistantPresentation(
   });
 }
 
-function isWindowsGlobalCaptureEvent(
+function parseWindowsGlobalCaptureEvent(
   value: unknown,
-): value is WindowsGlobalCaptureEvent {
+): WindowsGlobalCaptureEvent | null {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -216,39 +220,14 @@ function isWindowsGlobalCaptureEvent(
     typeof value.invocationId !== "number" ||
     !Number.isSafeInteger(value.invocationId) ||
     value.invocationId < 1 ||
-    !("response" in value) ||
-    typeof value.response !== "object" ||
-    value.response === null ||
-    !("status" in value.response)
+    !("response" in value)
   ) {
-    return false;
+    return null;
   }
-  if (value.response.status === "unavailable") {
-    return "reason" in value.response &&
-      typeof value.response.reason === "string" &&
-      WINDOWS_UNAVAILABLE_REASONS.has(value.response.reason);
-  }
-  if (
-    value.response.status !== "captured" ||
-    !("capture" in value.response) ||
-    typeof value.response.capture !== "object" ||
-    value.response.capture === null
-  ) {
-    return false;
-  }
-  const capture = value.response.capture;
-  return "text" in capture && typeof capture.text === "string" &&
-    "cursorOffset" in capture && typeof capture.cursorOffset === "number" &&
-    Number.isSafeInteger(capture.cursorOffset) &&
-    "captureToken" in capture && typeof capture.captureToken === "string" &&
-    capture.captureToken.length > 0 &&
-    "capabilities" in capture &&
-    typeof capture.capabilities === "object" &&
-    capture.capabilities !== null &&
-    "canReplaceText" in capture.capabilities &&
-    capture.capabilities.canReplaceText === false &&
-    "canObserveComposition" in capture.capabilities &&
-    capture.capabilities.canObserveComposition === false;
+  const response = parseNativeWindowsCaptureResponse(value.response);
+  return response === null
+    ? null
+    : { invocationId: value.invocationId, response };
 }
 
 function isFloatingAssistantPresentation(
@@ -280,17 +259,4 @@ const FLOATING_ASSISTANT_STATUSES: ReadonlySet<string> = new Set([
   "configuration-required",
   "unsupported",
   "failed",
-]);
-
-const WINDOWS_UNAVAILABLE_REASONS = new Set([
-  "no-focused-element",
-  "own-process",
-  "protected-field",
-  "disabled-element",
-  "not-focusable",
-  "unsupported-text-pattern",
-  "selection-unavailable",
-  "multiple-selection",
-  "element-disappeared",
-  "native-uia-unavailable",
 ]);

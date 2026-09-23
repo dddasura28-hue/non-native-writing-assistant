@@ -1,8 +1,11 @@
+pub mod geometry;
 mod model;
 
 #[cfg(target_os = "windows")]
 mod uia;
 
+#[cfg(test)]
+pub(crate) use model::build_capture;
 use model::unavailable;
 pub(crate) use model::{WindowsCaptureUnavailableReason, WindowsTextSurfaceCaptureResponse};
 use std::sync::atomic::{AtomicU64, Ordering};
