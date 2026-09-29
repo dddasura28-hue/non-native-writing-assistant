@@ -12,6 +12,19 @@ Desktop BYOK is the production provider path. The settings panel configures Open
 
 Experimental Windows manual global assistance is available through `Ctrl+Alt+Space`. Rust captures the focused external UI Automation text control before showing a small non-focusable, always-on-top assistant window. When the same capture provides reliable UIA text geometry, the window can appear near that external text position; unsupported, offscreen, or ambiguous geometry uses a deterministic screen-corner fallback. The fixed snapshot runs through the existing global controller and active BYOK profile, and the window shows read-only Source, Native Intent, and the first Normalized variant. Protected fields and this app's process are excluded. This is an explicit one-shot action with no promise of universal caret placement: there is no cross-application realtime monitoring, external Accept, clipboard fallback, or simulated input. See [ARCHITECTURE.md](ARCHITECTURE.md#windows-external-host-adapter-v1).
 
+Windows TSF Exploration v1 is an architecture and deterministic native-proof phase only. It establishes that a future system-wide composition-aware host requires a separately deployed in-process COM text-service DLL; the current Tauri executable cannot provide that role by itself. No TSF service is built, registered, activated, or connected to providers, and the working UI Automation path remains unchanged. See [ARCHITECTURE.md](ARCHITECTURE.md#windows-tsf-exploration-v1).
+
+## Product roadmap
+
+Correct host behavior, native integration, data safety, and lifecycle guarantees come first. Interaction refinement and customization follow only after those foundations are proven.
+
+- **Advanced input-method experience:** focus assistance on the text being written. Future scope controls may distinguish the current sentence, recent sentences, paragraph, and whole editable surface, while surrounding text serves as reference for intent, terminology, tone, and style. Browser UI Automation can currently mix unrelated page text into a capture; future targeting must distinguish the capture window, actual assistance target, and reference context.
+- **AI plus local analysis:** keep the provider architecture working while preserving room for local language rules, terminology, personalized style learning, local models, offline analysis, and local preference adaptation.
+- **Custom themes and skins:** leave room for user-controlled typography, spacing, radius, colors, surface styling, layout tokens, and importable themes.
+- **Configurable actions:** eventually let users choose and arrange actions such as Analyze, Confirm, Accept, and assistance scope controls.
+
+These are future directions. Assistance Scope, local learning or models, a theme engine, configurable buttons, and shortcut customization are not implemented.
+
 ## Desktop development
 
 Install workspace dependencies and start the native desktop shell:

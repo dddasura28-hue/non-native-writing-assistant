@@ -126,6 +126,14 @@ The floating presentation is read-only and contains only safe lifecycle status, 
 
 This shortcut is an explicit manual trigger. `canObserveComposition` and `canReplaceText` remain false for Windows UIA captures, so cross-application realtime and external Accept remain disabled. Protected text is never serialized, analyzed, displayed, logged, or persisted. There is no clipboard, SendKeys, SendInput, simulated typing, UIA event subscription, background polling, system tray workflow, or customizable hotkey. Near-caret placement is best-effort and does not promise universal provider, bidi, offscreen, DPI, or monitor compatibility.
 
+### Windows TSF exploration
+
+Windows TSF Exploration v1 is a feasibility and native-contract proof, not a shipped input method. The existing Tauri process and UI Automation adapter remain the product runtime. The exploration adds no text-service registration, language profile, automatic cross-application analysis, external Accept action, provider call, or user-visible TSF UI.
+
+The proof keeps TSF and COM identity inside the Windows host layer and maps only truthful, bounded UTF-16 text, one collapsed caret or contiguous selection, and at most one exact active composition onto the existing `TextContext` shape. Uncommitted composition remains explicitly marked and is not analyzable as committed Source. A capture is bound to opaque document-manager, context, and generation identity; equal text from a newer native session is still a different capture.
+
+A future production TSF host must be a separate in-process COM text-service DLL loaded by TSF into compatible target processes. It may bridge immutable host captures and safe control messages to the desktop product, but it must not own provider credentials, provider adapters, writing segmentation, Native Intent, Normalized output, or presentation. Realtime capability and external guarded replacement remain disabled until a registered native proof establishes composition ordering, protected-field exclusion, application compatibility, and safe deployment for every supported process architecture.
+
 ### Desktop provider configuration
 
 The desktop settings surface supports multiple named profiles, an open model ID, enable/disable state, explicit active-profile selection, and separate credential replacement/removal. OpenAI-compatible profiles also expose their visible base URL and structured-output compatibility mode; DeepSeek uses this custom-provider path rather than a dedicated adapter. Only HTTPS endpoints are accepted, except for exact loopback HTTP endpoints used deliberately in local development. Credentials embedded in URLs are invalid.

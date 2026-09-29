@@ -1,5 +1,7 @@
 pub mod geometry;
 mod model;
+#[cfg(test)]
+mod tsf;
 
 #[cfg(target_os = "windows")]
 mod uia;
