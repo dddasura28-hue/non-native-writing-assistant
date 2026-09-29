@@ -8,3 +8,4 @@ apps/desktop-app/dist/
 apps/desktop-app/src-tauri/gen/schemas/
 apps/desktop-app/src-tauri/target/
 apps/obsidian-plugin/dist/
+native/windows-tsf-service/target/

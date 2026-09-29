@@ -1,0 +1,4 @@
+LIBRARY "non_native_writing_tsf_service"
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE
