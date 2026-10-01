@@ -38,14 +38,15 @@ interface PendingRequest {
   readonly snapshot: AnalysisSnapshot;
   readonly signal: AbortSignal;
   readonly resolve: (proposal: AnalysisProposal) => void;
+  readonly reject: (reason: unknown) => void;
 }
 
 class ControlledProvider implements AnalysisProvider {
   readonly requests: PendingRequest[] = [];
 
   analyze(snapshot: AnalysisSnapshot, signal: AbortSignal): Promise<AnalysisProposal> {
-    return new Promise((resolve) => {
-      this.requests.push({ snapshot, signal, resolve });
+    return new Promise((resolve, reject) => {
+      this.requests.push({ snapshot, signal, resolve, reject });
     });
   }
 
@@ -75,6 +76,10 @@ class ControlledProvider implements AnalysisProvider {
       ]),
     }));
   }
+
+  fail(index: number): void {
+    this.requests[index]!.reject(new Error("provider failure with no user text"));
+  }
 }
 
 class MutableConfigurationSource implements DesktopAnalysisConfigurationSource {
@@ -90,11 +95,11 @@ class MutableConfigurationSource implements DesktopAnalysisConfigurationSource {
     return () => this.#listeners.delete(listener);
   }
 
-  switchProfile(): void {
+  switchProfile(label = "next"): void {
     this.#configuration = Object.freeze({
       ...this.#configuration,
       processorConfigurationFingerprint:
-        `${this.#configuration.processorConfigurationFingerprint}|next`,
+        `${this.#configuration.processorConfigurationFingerprint}|${label}`,
     });
     for (const listener of this.#listeners) {
       listener();
@@ -136,11 +141,14 @@ function createHarness(
     (presentation) => presentations.push(presentation),
     configurationSource === undefined ? {} : { configurationSource },
   );
+  let invocationId = 0;
   return {
     surface,
     provider,
     presentations,
     controller,
+    analyze: (options: { readonly configurationRequired?: boolean } = {}) =>
+      controller.analyzeActiveTextSurface(++invocationId, options),
     latest: () => presentations.at(-1)!,
   };
 }
@@ -156,7 +164,7 @@ async function analyzeAndComplete(
   normalized = "Normalized result.",
 ): Promise<void> {
   const requestIndex = harness.provider.requests.length;
-  const pending = harness.controller.analyzeActiveTextSurface();
+  const pending = harness.analyze();
   await flush();
   expect(harness.provider.requests).toHaveLength(requestIndex + 1);
   harness.provider.complete(requestIndex, normalized);
@@ -183,6 +191,7 @@ describe("GlobalDesktopAssistantController", () => {
     expect(harness.surface.captureCount).toBe(1);
     expect(harness.provider.requests[0]!.snapshot.sourceText).toBe("this have problem");
     expect(harness.latest()).toMatchObject({
+      invocationId: 1,
       hostAvailable: true,
       readOnly: false,
       automaticRealtimeAllowed: true,
@@ -191,6 +200,11 @@ describe("GlobalDesktopAssistantController", () => {
       sourceText: "this have problem",
       status: "completed",
     });
+    const revisions = harness.presentations
+      .filter((presentation) => presentation.invocationId === 1)
+      .map((presentation) => presentation.presentationRevision);
+    expect(revisions).toEqual([...revisions].sort((left, right) => left - right));
+    expect(new Set(revisions).size).toBe(revisions.length);
     expect(harness.latest().assistance.active?.nativeIntent?.text)
       .toBe("Intent: this have problem");
     expect(harness.latest().assistance.active?.normalizedTracks[0]?.text)
@@ -201,7 +215,7 @@ describe("GlobalDesktopAssistantController", () => {
     const harness = createHarness(textContext("Unavailable."));
     harness.surface.setAvailable(false);
 
-    await expect(harness.controller.analyzeActiveTextSurface())
+    await expect(harness.analyze())
       .resolves.toBe("unavailable");
 
     expect(harness.latest()).toMatchObject({
@@ -215,7 +229,7 @@ describe("GlobalDesktopAssistantController", () => {
   it("does not analyze an empty captured text window", async () => {
     const harness = createHarness(textContext(""));
 
-    await expect(harness.controller.analyzeActiveTextSurface())
+    await expect(harness.analyze())
       .resolves.toBe("empty");
 
     expect(harness.latest()).toMatchObject({
@@ -229,7 +243,7 @@ describe("GlobalDesktopAssistantController", () => {
   it("captures but does not call the provider when configuration is required", async () => {
     const harness = createHarness(textContext("Captured without a profile."));
 
-    await expect(harness.controller.analyzeActiveTextSurface({
+    await expect(harness.analyze({
       configurationRequired: true,
     })).resolves.toBe("configuration-required");
 
@@ -348,7 +362,7 @@ describe("GlobalDesktopAssistantController", () => {
       composition: { start: 1, end: 2, text: "文" },
     }));
 
-    await expect(harness.controller.analyzeActiveTextSurface())
+    await expect(harness.analyze())
       .resolves.toBe("composition-active");
 
     expect(harness.latest()).toMatchObject({
@@ -515,7 +529,7 @@ describe("GlobalDesktopAssistantController", () => {
     const oldTarget = currentTarget(harness);
     harness.surface.setContext(textContext("New target."));
 
-    const pending = harness.controller.analyzeActiveTextSurface();
+    const pending = harness.analyze();
     expect(harness.latest().status).toBe("capturing");
     await expect(harness.controller.acceptNormalized(oldTarget))
       .resolves.toBe("obsolete");
@@ -527,10 +541,10 @@ describe("GlobalDesktopAssistantController", () => {
 
   it("prevents a late old-host result from repainting a newer host", async () => {
     const harness = createHarness(textContext("Host A."));
-    const first = harness.controller.analyzeActiveTextSurface();
+    const first = harness.analyze();
     await flush();
     harness.surface.setContext(textContext("Host B."));
-    const second = harness.controller.analyzeActiveTextSurface();
+    const second = harness.analyze();
     await flush();
 
     harness.provider.complete(0, "Late A.");
@@ -546,9 +560,90 @@ describe("GlobalDesktopAssistantController", () => {
       .toBe("Current B.");
   });
 
+  it("prevents a late provider error from replacing a newer success", async () => {
+    const harness = createHarness(textContext("Host A."));
+    const first = harness.analyze();
+    await flush();
+    harness.surface.setContext(textContext("Host B."));
+    const second = harness.analyze();
+    await flush();
+
+    harness.provider.complete(1, "Current B.");
+    await expect(second).resolves.toBe("applied");
+    harness.provider.fail(0);
+    await expect(first).resolves.toBe("obsolete");
+    await flush();
+
+    expect(harness.latest()).toMatchObject({
+      invocationId: 2,
+      status: "completed",
+      sourceText: "Host B.",
+    });
+    expect(harness.latest().assistance.active?.normalizedTracks[0]?.text)
+      .toBe("Current B.");
+  });
+
+  it.each([
+    "provider-profile",
+    "model-id",
+    "processor-fingerprint",
+  ])("rejects a late result after %s changes during the request", async (change) => {
+    const configuration = new MutableConfigurationSource();
+    const harness = createHarness(
+      textContext("Configuration-bound source."),
+      FULL_CAPABILITIES,
+      configuration,
+    );
+    const pending = harness.analyze();
+    await flush();
+
+    configuration.switchProfile(change);
+    await flush();
+    harness.provider.complete(0, "Obsolete configured result.");
+    await expect(pending).resolves.not.toBe("applied");
+    await flush();
+
+    expect(JSON.stringify(harness.latest())).not.toContain(
+      "Obsolete configured result.",
+    );
+    expect(harness.latest().guardedAcceptAllowed).toBe(false);
+  });
+
+  it("invalidates an active request when its profile becomes disabled", async () => {
+    const harness = createHarness(textContext("Credential-bound source."));
+    const pending = harness.analyze();
+    await flush();
+
+    harness.controller.setConfigurationRequired(true);
+    expect(harness.latest()).toMatchObject({
+      invocationId: 1,
+      status: "configuration-required",
+      sourceText: "Credential-bound source.",
+      guardedAcceptAllowed: false,
+    });
+    harness.provider.complete(0, "Late disabled-profile result.");
+    await expect(pending).resolves.toBe("obsolete");
+    await flush();
+
+    expect(JSON.stringify(harness.latest())).not.toContain(
+      "Late disabled-profile result.",
+    );
+  });
+
+  it("surfaces credential unavailability without credential diagnostics", async () => {
+    const harness = createHarness(textContext("Safe source."));
+    await expect(harness.analyze({ configurationRequired: true }))
+      .resolves.toBe("configuration-required");
+
+    const serialized = JSON.stringify(harness.latest());
+    expect(serialized).toContain("Configure a provider");
+    expect(serialized).not.toContain("sk-secret-sentinel");
+    expect(serialized).not.toContain("provider failure");
+  });
+
   it("blocks late presentation after controller cleanup", async () => {
     const harness = createHarness(textContext("Dispose me."));
-    const pending = harness.controller.analyzeActiveTextSurface();
+    const pending = harness.analyze();
     await flush();
     const countBeforeDispose = harness.presentations.length;
     harness.controller.dispose();

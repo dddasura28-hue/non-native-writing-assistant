@@ -10,7 +10,7 @@ use tauri::Manager;
 mod global_shortcut;
 
 fn main() {
-    let builder = tauri::Builder::default().manage(windows::WindowsCaptureSequence::default());
+    let builder = tauri::Builder::default();
 
     #[cfg(target_os = "windows")]
     let builder = builder

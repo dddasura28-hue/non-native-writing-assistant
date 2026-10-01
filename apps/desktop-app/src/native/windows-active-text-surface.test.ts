@@ -236,7 +236,7 @@ describe("WindowsActiveTextSurfacePort", () => {
       (presentation) => presentations.push(presentation),
     );
 
-    await expect(controller.analyzeActiveTextSurface()).resolves.toBe("applied");
+    await expect(controller.analyzeActiveTextSurface(1)).resolves.toBe("applied");
 
     expect(provider.snapshots[0]?.sourceText).toBe("This method have problem.");
     const latest = presentations.at(-1)!;
@@ -260,7 +260,7 @@ describe("WindowsActiveTextSurfacePort", () => {
       () => undefined,
     );
 
-    await expect(controller.analyzeActiveTextSurface()).resolves.toBe("unavailable");
+    await expect(controller.analyzeActiveTextSurface(1)).resolves.toBe("unavailable");
     expect(provider.snapshots).toEqual([]);
   });
 
@@ -288,7 +288,7 @@ describe("WindowsActiveTextSurfacePort", () => {
       () => undefined,
     );
 
-    await controller.analyzeActiveTextSurface();
+    await controller.analyzeActiveTextSurface(1);
 
     const request = JSON.stringify(provider.snapshots[0]);
     expect(request).not.toContain("processId");
@@ -310,9 +310,9 @@ describe("WindowsActiveTextSurfacePort", () => {
     );
 
     port.stage(captured("host 1", { captureToken: "opaque-1" }));
-    await controller.analyzeActiveTextSurface();
+    await controller.analyzeActiveTextSurface(1);
     port.stage(captured("host 2", { captureToken: "opaque-2" }));
-    await controller.analyzeActiveTextSurface();
+    await controller.analyzeActiveTextSurface(2);
 
     expect(provider.snapshots.map((snapshot) => snapshot.sourceText)).toEqual([
       "host 1",
@@ -332,10 +332,10 @@ describe("WindowsActiveTextSurfacePort", () => {
     );
 
     port.stage(captured("identical text", { captureToken: "session-1" }));
-    const first = controller.analyzeActiveTextSurface();
+    const first = controller.analyzeActiveTextSurface(1);
     await flush();
     port.stage(captured("identical text", { captureToken: "session-2" }));
-    const second = controller.analyzeActiveTextSurface();
+    const second = controller.analyzeActiveTextSurface(2);
     await flush();
     provider.complete(1, "new session result");
     await expect(second).resolves.toBe("applied");
@@ -350,6 +350,107 @@ describe("WindowsActiveTextSurfacePort", () => {
     );
   });
 
+  it("editable to unsupported clears ownership, and a later editable host works", async () => {
+    const port = new WindowsActiveTextSurfacePort();
+    const provider = new DeferredProvider();
+    const presentations: GlobalDesktopAssistantPresentation[] = [];
+    const controller = new GlobalDesktopAssistantController(
+      port,
+      provider,
+      (presentation) => presentations.push(presentation),
+    );
+
+    port.stage(captured("editable A", { captureToken: "invocation-A" }));
+    const first = controller.analyzeActiveTextSurface(1);
+    await flush();
+    port.stage({ status: "unavailable", reason: "not-editable" });
+    await expect(controller.analyzeActiveTextSurface(2)).resolves.toBe("unavailable");
+    expect(presentations.at(-1)).toMatchObject({
+      invocationId: 2,
+      status: "no-host",
+      sourceText: null,
+    });
+    expect(provider.requests).toHaveLength(1);
+
+    provider.complete(0, "late A result");
+    await expect(first).resolves.toBe("obsolete");
+    await flush();
+    expect(JSON.stringify(presentations.at(-1))).not.toContain("late A result");
+
+    port.stage(captured("editable C", { captureToken: "invocation-C" }));
+    const third = controller.analyzeActiveTextSurface(3);
+    await flush();
+    provider.complete(1, "current C result");
+    await expect(third).resolves.toBe("applied");
+    expect(presentations.at(-1)).toMatchObject({
+      invocationId: 3,
+      sourceText: "editable C",
+      status: "completed",
+    });
+  });
+
+  it("a protected invocation invalidates prior work and never starts a provider", async () => {
+    const port = new WindowsActiveTextSurfacePort();
+    const provider = new DeferredProvider();
+    const presentations: GlobalDesktopAssistantPresentation[] = [];
+    const controller = new GlobalDesktopAssistantController(
+      port,
+      provider,
+      (presentation) => presentations.push(presentation),
+    );
+
+    port.stage(captured("editable before password"));
+    const first = controller.analyzeActiveTextSurface(1);
+    await flush();
+    port.stage({ status: "unavailable", reason: "protected-field" });
+    await expect(controller.analyzeActiveTextSurface(2)).resolves.toBe("unavailable");
+    expect(provider.requests).toHaveLength(1);
+    expect(presentations.at(-1)).toMatchObject({
+      invocationId: 2,
+      sourceText: null,
+      status: "no-host",
+    });
+
+    provider.complete(0, "must stay hidden");
+    await expect(first).resolves.toBe("obsolete");
+    await flush();
+    expect(JSON.stringify(presentations.at(-1))).not.toContain("must stay hidden");
+    expect(JSON.stringify(presentations.at(-1))).not.toContain(
+      "editable before password",
+    );
+  });
+
+  it("does not recapture when focus changes after an immutable capture", async () => {
+    const port = new WindowsActiveTextSurfacePort();
+    const provider = new DeferredProvider();
+    const presentations: GlobalDesktopAssistantPresentation[] = [];
+    const controller = new GlobalDesktopAssistantController(
+      port,
+      provider,
+      (presentation) => presentations.push(presentation),
+    );
+
+    port.stage(captured("immutable A"));
+    const first = controller.analyzeActiveTextSurface(1);
+    await flush();
+    port.stage({ status: "unavailable", reason: "element-disappeared" });
+    provider.complete(0, "result for immutable A");
+    await expect(first).resolves.toBe("applied");
+    expect(presentations.at(-1)).toMatchObject({
+      invocationId: 1,
+      sourceText: "immutable A",
+      status: "completed",
+    });
+
+    await expect(controller.analyzeActiveTextSurface(2)).resolves.toBe("unavailable");
+    expect(presentations.at(-1)).toMatchObject({
+      invocationId: 2,
+      sourceText: null,
+      status: "no-host",
+    });
+    expect(provider.requests).toHaveLength(1);
+  });
+
   it("cleanup blocks late Windows provider callbacks", async () => {
     const provider = new DeferredProvider();
     const presentations: GlobalDesktopAssistantPresentation[] = [];
@@ -359,7 +460,7 @@ describe("WindowsActiveTextSurfacePort", () => {
       (presentation) => presentations.push(presentation),
     );
 
-    const pending = controller.analyzeActiveTextSurface();
+    const pending = controller.analyzeActiveTextSurface(1);
     await flush();
     controller.dispose();
     const presentationCount = presentations.length;
@@ -378,7 +479,7 @@ describe("WindowsActiveTextSurfacePort", () => {
       provider,
       (presentation) => presentations.push(presentation),
     );
-    await controller.analyzeActiveTextSurface();
+    await controller.analyzeActiveTextSurface(1);
 
     expect(presentations.at(-1)?.guardedAcceptAllowed).toBe(false);
     expect(presentations.at(-1)?.assistance.active?.normalizedTracks[0]?.acceptTarget)

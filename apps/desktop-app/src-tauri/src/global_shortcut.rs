@@ -2,15 +2,9 @@ use crate::windows::geometry::{
     bottom_right_position, logical_gap_to_physical, place_near_anchor, rescale_physical_size,
     AssistantPhysicalSize, ExternalTextAnchor, PhysicalWorkArea,
 };
-use crate::windows::{
-    capture_active_windows_text_surface_now, WindowsCaptureSequence,
-    WindowsTextSurfaceCaptureResponse,
-};
+use crate::windows::{capture_active_windows_text_surface_now, WindowsTextSurfaceCaptureResponse};
 use serde::Serialize;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex,
-};
+use std::sync::Mutex;
 use tauri::{App, AppHandle, Emitter, Manager, PhysicalPosition, Runtime, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -37,14 +31,14 @@ pub struct RegistrationStatus {
 
 pub struct GlobalShortcutState {
     registration: Mutex<RegistrationState>,
-    invocation: AtomicU64,
+    invocation: Mutex<u64>,
 }
 
 impl Default for GlobalShortcutState {
     fn default() -> Self {
         Self {
             registration: Mutex::new(RegistrationState::Initializing),
-            invocation: AtomicU64::new(0),
+            invocation: Mutex::new(0),
         }
     }
 }
@@ -63,8 +57,28 @@ impl GlobalShortcutState {
             .unwrap_or(RegistrationState::Unavailable)
     }
 
-    fn next_invocation(&self) -> u64 {
-        self.invocation.fetch_add(1, Ordering::Relaxed) + 1
+    fn begin_invocation(&self, invalidate_previous: impl FnOnce()) -> u64 {
+        let mut invocation = self
+            .invocation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *invocation = invocation
+            .checked_add(1)
+            .expect("Windows global invocation sequence exhausted");
+        invalidate_previous();
+        *invocation
+    }
+
+    fn complete_if_current(&self, invocation_id: u64, complete: impl FnOnce()) -> bool {
+        let invocation = self
+            .invocation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *invocation != invocation_id {
+            return false;
+        }
+        complete();
+        true
     }
 }
 
@@ -112,29 +126,46 @@ fn configured_shortcut() -> Shortcut {
 }
 
 fn handle_shortcut<R: Runtime>(app: &AppHandle<R>) {
-    let invocation_id = app.state::<GlobalShortcutState>().next_invocation();
-    dispatch_capture(
-        || capture_active_windows_text_surface_now(&app.state::<WindowsCaptureSequence>()),
-        |response| {
-            let payload = GlobalCaptureEvent {
-                invocation_id,
-                response: response.clone(),
-            };
-            let _ = app.emit_to(ASSISTANT_WINDOW_LABEL, CAPTURE_EVENT, &payload);
-            let _ = app.emit_to("main", CAPTURE_EVENT, &payload);
-        },
-        |response| apply_window_action(app, response),
-    );
+    let state = app.state::<GlobalShortcutState>();
+    let invocation_id = state.begin_invocation(|| hide_assistant_window(app));
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<GlobalShortcutState>();
+        dispatch_capture_if_current(
+            &state,
+            invocation_id,
+            || capture_active_windows_text_surface_now(invocation_token(invocation_id)),
+            |response| {
+                let payload = GlobalCaptureEvent {
+                    invocation_id,
+                    response: response.clone(),
+                };
+                let _ = app.emit_to(ASSISTANT_WINDOW_LABEL, CAPTURE_EVENT, &payload);
+                let _ = app.emit_to("main", CAPTURE_EVENT, &payload);
+                apply_window_action(&app, response);
+            },
+        );
+    });
 }
 
-fn dispatch_capture(
+fn dispatch_capture_if_current(
+    state: &GlobalShortcutState,
+    invocation_id: u64,
     capture: impl FnOnce() -> WindowsTextSurfaceCaptureResponse,
-    notify: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
-    update_window: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
-) {
+    complete: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
+) -> bool {
     let response = capture();
-    notify(&response);
-    update_window(&response);
+    state.complete_if_current(invocation_id, || complete(&response))
+}
+
+fn invocation_token(invocation_id: u64) -> String {
+    format!("windows-invocation-{invocation_id}")
+}
+
+fn hide_assistant_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(ASSISTANT_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
 }
 
 fn apply_window_action<R: Runtime>(
@@ -145,7 +176,6 @@ fn apply_window_action<R: Runtime>(
         return;
     };
 
-    let _ = window.hide();
     let WindowsTextSurfaceCaptureResponse::Captured { capture } = response else {
         return;
     };
@@ -228,58 +258,123 @@ mod tests {
     use crate::windows::geometry::ExternalTextAnchorConfidence;
     use crate::windows::{build_capture, WindowsCaptureUnavailableReason};
     use std::cell::RefCell;
+    use std::sync::{mpsc, Arc};
 
     #[test]
     fn capture_is_completed_before_notification_and_window_visibility() {
+        let state = GlobalShortcutState::default();
         let steps = RefCell::new(Vec::new());
-        dispatch_capture(
+        let invocation_id = state.begin_invocation(|| steps.borrow_mut().push("hide-old"));
+        dispatch_capture_if_current(
+            &state,
+            invocation_id,
             || {
                 steps.borrow_mut().push("capture");
                 WindowsTextSurfaceCaptureResponse::Unavailable {
                     reason: WindowsCaptureUnavailableReason::NoFocusedElement,
                 }
             },
-            |_| steps.borrow_mut().push("notify"),
-            |_| steps.borrow_mut().push("window"),
+            |_| {
+                steps.borrow_mut().push("notify");
+                steps.borrow_mut().push("window");
+            },
         );
 
-        assert_eq!(*steps.borrow(), ["capture", "notify", "window"]);
+        assert_eq!(*steps.borrow(), ["hide-old", "capture", "notify", "window"]);
     }
 
     #[test]
-    fn failed_capture_hides_instead_of_reusing_a_previous_result() {
-        let captured = RefCell::new(None);
-        dispatch_capture(
-            || WindowsTextSurfaceCaptureResponse::Unavailable {
-                reason: WindowsCaptureUnavailableReason::ProtectedField,
-            },
-            |_| {},
-            |response| {
-                *captured.borrow_mut() = Some(matches!(
-                    response,
-                    WindowsTextSurfaceCaptureResponse::Captured { .. }
-                ))
-            },
-        );
-        assert_eq!(*captured.borrow(), Some(false));
+    fn repeated_shortcuts_create_distinct_monotonic_invocations() {
+        let state = GlobalShortcutState::default();
+        let first = state.begin_invocation(|| {});
+        let second = state.begin_invocation(|| {});
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_ne!(invocation_token(first), invocation_token(second));
     }
 
     #[test]
-    fn every_dispatch_performs_a_fresh_capture() {
-        let captures = RefCell::new(0);
-        for _ in 0..2 {
-            dispatch_capture(
+    fn slow_capture_a_arriving_after_b_is_discarded() {
+        let state = Arc::new(GlobalShortcutState::default());
+        let presented = Arc::new(Mutex::new(Vec::new()));
+        let invocation_a = state.begin_invocation(|| {});
+        let (capture_started_tx, capture_started_rx) = mpsc::channel();
+        let (release_capture_tx, release_capture_rx) = mpsc::channel();
+        let state_a = Arc::clone(&state);
+        let presented_a = Arc::clone(&presented);
+        let capture_a = std::thread::spawn(move || {
+            dispatch_capture_if_current(
+                &state_a,
+                invocation_a,
                 || {
-                    *captures.borrow_mut() += 1;
+                    capture_started_tx.send(()).unwrap();
+                    release_capture_rx.recv().unwrap();
                     WindowsTextSurfaceCaptureResponse::Unavailable {
                         reason: WindowsCaptureUnavailableReason::NoFocusedElement,
                     }
                 },
-                |_| {},
-                |_| {},
-            );
-        }
-        assert_eq!(*captures.borrow(), 2);
+                |_| presented_a.lock().unwrap().push("A"),
+            )
+        });
+        capture_started_rx.recv().unwrap();
+
+        let invocation_b = state.begin_invocation(|| {});
+        assert!(state.complete_if_current(invocation_b, || { presented.lock().unwrap().push("B") }));
+        release_capture_tx.send(()).unwrap();
+
+        assert!(!capture_a.join().unwrap());
+        assert_eq!(*presented.lock().unwrap(), ["B"]);
+    }
+
+    #[test]
+    fn current_unavailable_invocation_hides_without_showing() {
+        let state = GlobalShortcutState::default();
+        let actions = RefCell::new(Vec::new());
+        let invocation = state.begin_invocation(|| actions.borrow_mut().push("hide"));
+
+        assert!(
+            state.complete_if_current(invocation, || { actions.borrow_mut().push("unavailable") })
+        );
+
+        assert_eq!(*actions.borrow(), ["hide", "unavailable"]);
+    }
+
+    #[test]
+    fn stale_a_cannot_reposition_or_show_after_b_owns_the_window() {
+        let state = GlobalShortcutState::default();
+        let actions = RefCell::new(Vec::new());
+        let invocation_a = state.begin_invocation(|| actions.borrow_mut().push("hide-A"));
+        let invocation_b = state.begin_invocation(|| actions.borrow_mut().push("hide-B"));
+
+        assert!(state.complete_if_current(invocation_b, || {
+            actions.borrow_mut().push("position-monitor-2");
+            actions.borrow_mut().push("show-B");
+        }));
+        assert!(!state.complete_if_current(invocation_a, || {
+            actions.borrow_mut().push("position-monitor-1");
+            actions.borrow_mut().push("show-A");
+        }));
+
+        assert_eq!(
+            *actions.borrow(),
+            ["hide-A", "hide-B", "position-monitor-2", "show-B"]
+        );
+    }
+
+    #[test]
+    fn stale_a_failure_cannot_hide_a_successful_b() {
+        let state = GlobalShortcutState::default();
+        let actions = RefCell::new(Vec::new());
+        let invocation_a = state.begin_invocation(|| actions.borrow_mut().push("hide-A"));
+        let invocation_b = state.begin_invocation(|| actions.borrow_mut().push("hide-B"));
+
+        assert!(state.complete_if_current(invocation_b, || { actions.borrow_mut().push("show-B") }));
+        assert!(!state.complete_if_current(invocation_a, || {
+            actions.borrow_mut().push("hide-stale-A-error")
+        }));
+
+        assert_eq!(*actions.borrow(), ["hide-A", "hide-B", "show-B"]);
     }
 
     #[test]
@@ -311,6 +406,8 @@ mod tests {
 
     #[test]
     fn one_frozen_capture_supplies_both_event_and_window_geometry() {
+        let state = GlobalShortcutState::default();
+        let invocation_id = state.begin_invocation(|| {});
         let anchor = ExternalTextAnchor {
             physical_x: 320.0,
             physical_y: 240.0,
@@ -325,7 +422,7 @@ mod tests {
                 None,
                 true,
                 true,
-                "capture-1".into(),
+                invocation_token(invocation_id),
                 Some(anchor),
             )
             .unwrap(),
@@ -333,15 +430,13 @@ mod tests {
         let notified = RefCell::new(None);
         let positioned = RefCell::new(None);
 
-        dispatch_capture(
+        dispatch_capture_if_current(
+            &state,
+            invocation_id,
             || response,
             |response| {
                 if let WindowsTextSurfaceCaptureResponse::Captured { capture } = response {
                     *notified.borrow_mut() = capture.anchor;
-                }
-            },
-            |response| {
-                if let WindowsTextSurfaceCaptureResponse::Captured { capture } = response {
                     *positioned.borrow_mut() = capture.anchor;
                 }
             },
@@ -349,5 +444,45 @@ mod tests {
 
         assert_eq!(*notified.borrow(), Some(anchor));
         assert_eq!(*positioned.borrow(), Some(anchor));
+    }
+
+    #[test]
+    fn fallback_geometry_is_scoped_to_the_current_invocation() {
+        let state = GlobalShortcutState::default();
+        let actions = RefCell::new(Vec::new());
+        let invocation_a = state.begin_invocation(|| {});
+        let invocation_b = state.begin_invocation(|| {});
+        let response_b = WindowsTextSurfaceCaptureResponse::Captured {
+            capture: build_capture(
+                "B".into(),
+                1,
+                None,
+                true,
+                true,
+                invocation_token(invocation_b),
+                None,
+            )
+            .unwrap(),
+        };
+
+        assert!(dispatch_capture_if_current(
+            &state,
+            invocation_b,
+            || response_b,
+            |response| {
+                if let WindowsTextSurfaceCaptureResponse::Captured { capture } = response {
+                    actions.borrow_mut().push(if capture.anchor.is_none() {
+                        "fallback-B"
+                    } else {
+                        "anchor-B"
+                    });
+                }
+            },
+        ));
+        assert!(!state.complete_if_current(invocation_a, || {
+            actions.borrow_mut().push("stale-A-geometry")
+        }));
+
+        assert_eq!(*actions.borrow(), ["fallback-B"]);
     }
 }

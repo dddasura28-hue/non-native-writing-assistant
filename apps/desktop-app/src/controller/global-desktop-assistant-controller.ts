@@ -32,6 +32,8 @@ export type GlobalDesktopAssistantStatus =
   | "updated";
 
 export interface GlobalDesktopAssistantPresentation {
+  readonly invocationId: number | null;
+  readonly presentationRevision: number;
   readonly hostAvailable: boolean;
   readonly readOnly: boolean;
   readonly automaticRealtimeAllowed: boolean;
@@ -66,6 +68,8 @@ export type GlobalDesktopAssistantControllerOptions = Pick<
 
 export const EMPTY_GLOBAL_DESKTOP_ASSISTANCE: GlobalDesktopAssistantPresentation =
   Object.freeze({
+    invocationId: null,
+    presentationRevision: 0,
     hostAvailable: false,
     readOnly: true,
     automaticRealtimeAllowed: false,
@@ -79,7 +83,7 @@ export const EMPTY_GLOBAL_DESKTOP_ASSISTANCE: GlobalDesktopAssistantPresentation
 
 /**
  * Manual external-host orchestration over the existing desktop writing engine.
- * It owns invocation freshness but never sees a native host session identity.
+ * Native invocation identity remains authoritative through provider completion.
  */
 export class GlobalDesktopAssistantController {
   readonly #surface: ActiveTextSurfacePort;
@@ -91,7 +95,9 @@ export class GlobalDesktopAssistantController {
   #capture: ActiveTextSurfaceCapture | null = null;
   #mode: DesktopHostAssistanceMode | null = null;
   #currentAcceptTargets = new Set<DesktopNormalizedAcceptTarget>();
-  #invocation = 0;
+  #currentInvocationId = 0;
+  #presentationRevision = 0;
+  #configurationRequired = false;
   #disposed = false;
 
   constructor(
@@ -108,19 +114,28 @@ export class GlobalDesktopAssistantController {
   }
 
   async analyzeActiveTextSurface(
+    invocationId: number,
     options: GlobalDesktopManualAnalysisOptions = {},
   ): Promise<GlobalDesktopManualAnalysisResult> {
-    if (this.#disposed) {
+    if (
+      this.#disposed ||
+      !Number.isSafeInteger(invocationId) ||
+      invocationId <= this.#currentInvocationId
+    ) {
       return "obsolete";
     }
 
-    const invocation = ++this.#invocation;
+    this.#currentInvocationId = invocationId;
+    this.#presentationRevision = 0;
+    if (options.configurationRequired !== undefined) {
+      this.#configurationRequired = options.configurationRequired;
+    }
     this.#clearCurrentCapture();
-    this.#present(Object.freeze({
+    this.#presentCurrent({
       ...EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
       status: "capturing",
       statusMessage: "Capturing active text",
-    }));
+    });
 
     let capture: ActiveTextSurfaceCapture | null;
     try {
@@ -132,11 +147,11 @@ export class GlobalDesktopAssistantController {
       capture = null;
     }
 
-    if (this.#disposed || invocation !== this.#invocation) {
+    if (this.#disposed || invocationId !== this.#currentInvocationId) {
       return "obsolete";
     }
     if (capture === null) {
-      this.#present(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
+      this.#presentCurrent(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
       return "unavailable";
     }
 
@@ -145,28 +160,28 @@ export class GlobalDesktopAssistantController {
     this.#mode = mode;
 
     if (!/\S/u.test(capture.context.text)) {
-      this.#present(this.#captureState(
+      this.#presentCurrent(this.#captureState(
         "empty",
         "No analyzable text in the active host",
       ));
       return "empty";
     }
     if (capture.context.composition !== null) {
-      this.#present(this.#captureState(
+      this.#presentCurrent(this.#captureState(
         "composition-active",
         "Finish composing text before analysis",
       ));
       return "composition-active";
     }
     if (!mode.manualAnalysisAllowed) {
-      this.#present(this.#captureState(
+      this.#presentCurrent(this.#captureState(
         "empty",
         "No analyzable text in the active host",
       ));
       return "empty";
     }
-    if (options.configurationRequired === true) {
-      this.#present(this.#captureState(
+    if (this.#configurationRequired) {
+      this.#presentCurrent(this.#captureState(
         "configuration-required",
         "Configure a provider in the main app to analyze this text",
       ));
@@ -179,7 +194,7 @@ export class GlobalDesktopAssistantController {
       (assistance) => {
         if (
           !this.#disposed &&
-          invocation === this.#invocation &&
+          invocationId === this.#currentInvocationId &&
           this.#engine === engine
         ) {
           this.#presentEngineState(capture, mode, assistance);
@@ -200,7 +215,7 @@ export class GlobalDesktopAssistantController {
 
     if (
       this.#disposed ||
-      invocation !== this.#invocation ||
+      invocationId !== this.#currentInvocationId ||
       this.#engine !== engine
     ) {
       return "obsolete";
@@ -213,7 +228,7 @@ export class GlobalDesktopAssistantController {
   ): Promise<DesktopNormalizedAcceptResult> {
     const engine = this.#engine;
     const mode = this.#mode;
-    const invocation = this.#invocation;
+    const invocationId = this.#currentInvocationId;
     if (
       this.#disposed ||
       engine === null ||
@@ -228,12 +243,11 @@ export class GlobalDesktopAssistantController {
     if (
       result === "accepted" &&
       !this.#disposed &&
-      invocation === this.#invocation &&
+      invocationId === this.#currentInvocationId &&
       this.#engine === engine
     ) {
-      this.#invocation += 1;
       this.#clearCurrentCapture();
-      this.#present(Object.freeze({
+      this.#presentCurrent({
         hostAvailable: true,
         readOnly: !mode.guardedAcceptAllowed,
         automaticRealtimeAllowed: mode.automaticRealtimeAllowed,
@@ -243,7 +257,7 @@ export class GlobalDesktopAssistantController {
         status: "updated",
         statusMessage: "Active host text was updated",
         assistance: EMPTY_DESKTOP_ASSISTANCE,
-      }));
+      });
     }
     return result;
   }
@@ -253,8 +267,25 @@ export class GlobalDesktopAssistantController {
       return;
     }
     this.#disposed = true;
-    this.#invocation += 1;
     this.#clearCurrentCapture();
+  }
+
+  setConfigurationRequired(required: boolean): void {
+    if (this.#disposed || required === this.#configurationRequired) {
+      return;
+    }
+    this.#configurationRequired = required;
+    if (!required || this.#capture === null || this.#mode === null) {
+      return;
+    }
+
+    this.#engine?.dispose();
+    this.#engine = null;
+    this.#currentAcceptTargets.clear();
+    this.#presentCurrent(this.#captureState(
+      "configuration-required",
+      "Configure a provider in the main app to analyze this text",
+    ));
   }
 
   #presentEngineState(
@@ -269,7 +300,7 @@ export class GlobalDesktopAssistantController {
           : []) ?? [],
     );
     const active = assistance.active;
-    this.#present(Object.freeze({
+    this.#presentCurrent({
       hostAvailable: true,
       readOnly: !mode.guardedAcceptAllowed,
       automaticRealtimeAllowed: mode.automaticRealtimeAllowed,
@@ -280,13 +311,16 @@ export class GlobalDesktopAssistantController {
       status: active?.status ?? "idle",
       statusMessage: active?.statusMessage ?? "No active writing unit",
       assistance,
-    }));
+    });
   }
 
   #captureState(
     status: "empty" | "composition-active" | "configuration-required",
     statusMessage: string,
-  ): GlobalDesktopAssistantPresentation {
+  ): Omit<
+    GlobalDesktopAssistantPresentation,
+    "invocationId" | "presentationRevision"
+  > {
     const capture = this.#capture!;
     const mode = this.#mode!;
     return Object.freeze({
@@ -308,5 +342,22 @@ export class GlobalDesktopAssistantController {
     this.#capture = null;
     this.#mode = null;
     this.#currentAcceptTargets.clear();
+  }
+
+  #presentCurrent(
+    presentation: Omit<
+      GlobalDesktopAssistantPresentation,
+      "invocationId" | "presentationRevision"
+    >,
+  ): void {
+    if (this.#disposed || this.#currentInvocationId < 1) {
+      return;
+    }
+    this.#presentationRevision += 1;
+    this.#present(Object.freeze({
+      ...presentation,
+      invocationId: this.#currentInvocationId,
+      presentationRevision: this.#presentationRevision,
+    }));
   }
 }

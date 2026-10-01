@@ -102,6 +102,7 @@ describe("GlobalAssistantWindow", () => {
     act(() => bridge.captureListener?.(capturedEvent(2)));
     act(() => bridge.presentationListener?.({
       invocationId: 2,
+      presentationRevision: 2,
       status: "completed",
       statusMessage: "Analysis ready",
       sourceText: "Source",
@@ -120,6 +121,7 @@ describe("GlobalAssistantWindow", () => {
     act(() => bridge.captureListener?.(capturedEvent(5)));
     act(() => bridge.presentationListener?.({
       invocationId: 4,
+      presentationRevision: 2,
       status: "completed",
       statusMessage: "Analysis ready",
       sourceText: "Old host",
@@ -136,6 +138,7 @@ describe("GlobalAssistantWindow", () => {
   it("does not regress a completed invocation to a late analyzing event", () => {
     act(() => bridge.presentationListener?.({
       invocationId: 10,
+      presentationRevision: 2,
       status: "completed",
       statusMessage: "Analysis ready",
       sourceText: "Current host",
@@ -159,6 +162,29 @@ describe("GlobalAssistantWindow", () => {
     expect(container.textContent).toContain("No editable writing field focused");
     expect(container.textContent).not.toContain("Long external");
     expect(container.textContent).not.toContain("protected-field");
+  });
+
+  it("does not let a stale result reopen content cleared by unsupported B", () => {
+    act(() => bridge.captureListener?.(capturedEvent(20)));
+    act(() => bridge.captureListener?.({
+      invocationId: 21,
+      response: { status: "unavailable", reason: "not-editable" },
+    }));
+    act(() => bridge.presentationListener?.({
+      invocationId: 20,
+      presentationRevision: 9,
+      status: "failed",
+      statusMessage: "Old failure",
+      sourceText: "Old source",
+      nativeIntentText: null,
+      normalizedText: "Old result",
+      readOnly: true,
+    }));
+
+    expect(container.textContent).toContain("No editable writing field focused");
+    expect(container.textContent).not.toContain("Old failure");
+    expect(container.textContent).not.toContain("Old source");
+    expect(container.textContent).not.toContain("Old result");
   });
 
   it("uses constrained scrolling styles and detaches listeners on cleanup", () => {

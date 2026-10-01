@@ -27,6 +27,7 @@ import {
 import { WindowsActiveTextSurfacePort } from "../native/windows-active-text-surface.js";
 import {
   TauriWindowsGlobalShortcutBridge,
+  LatestWindowsGlobalInvocation,
   createFloatingAssistantPresentation,
   type WindowsGlobalCaptureEvent,
   type WindowsGlobalShortcutBridge,
@@ -86,20 +87,21 @@ export function createDesktopControllerWithBridge(
     new TauriProviderSettingsPersistence(),
   );
   const secrets = new TauriDesktopSecretStore();
+  let global: GlobalDesktopAssistantController | null = null;
   let configurationRequired = true;
   const settings = new DesktopProviderSettingsController(
     profiles,
     secrets,
     (view) => {
       configurationRequired = view.configurationRequired;
+      global?.setConfigurationRequired(configurationRequired);
       presentSettings(view);
     },
   );
   const windowsSurface = new WindowsActiveTextSurfacePort();
   let writing: DesktopEngineController | null = null;
-  let global: GlobalDesktopAssistantController | null = null;
   let pendingGlobalCapture: WindowsGlobalCaptureEvent | null = null;
-  let currentGlobalInvocationId = 0;
+  const globalInvocations = new LatestWindowsGlobalInvocation();
   let globalPresentationEnabled = false;
   let stopListening: (() => void) | null = null;
   let pendingContext: TextContext | null = null;
@@ -109,28 +111,27 @@ export function createDesktopControllerWithBridge(
 
   const publishGlobal: PresentGlobalDesktopAssistant = (presentation) => {
     presentGlobal(presentation);
-    if (globalPresentationEnabled && currentGlobalInvocationId > 0) {
+    if (globalPresentationEnabled && presentation.invocationId !== null) {
       void shortcutBridge.publishPresentation(
-        createFloatingAssistantPresentation(
-          currentGlobalInvocationId,
-          presentation,
-        ),
+        createFloatingAssistantPresentation(presentation),
       ).catch(() => undefined);
     }
   };
 
   const analyzeCapture = (event: WindowsGlobalCaptureEvent): void => {
-    if (disposed || event.invocationId <= currentGlobalInvocationId) {
+    if (disposed || !globalInvocations.begin(event.invocationId)) {
       return;
     }
-    currentGlobalInvocationId = event.invocationId;
     pendingGlobalCapture = null;
     windowsSurface.stage(event.response);
     if (global === null) {
       pendingGlobalCapture = event;
       return;
     }
-    void global.analyzeActiveTextSurface({ configurationRequired });
+    void global.analyzeActiveTextSurface(
+      event.invocationId,
+      { configurationRequired },
+    );
   };
 
   void shortcutBridge.listenForCaptures(analyzeCapture).then((unlisten) => {
@@ -164,6 +165,7 @@ export function createDesktopControllerWithBridge(
       publishGlobal,
       { configurationSource },
     );
+    global.setConfigurationRequired(configurationRequired);
     globalPresentationEnabled = true;
     if (pendingContext !== null) {
       writing.observe(
@@ -176,9 +178,13 @@ export function createDesktopControllerWithBridge(
       pendingObservationOptions = undefined;
     }
     if (pendingGlobalCapture !== null) {
-      windowsSurface.stage(pendingGlobalCapture.response);
+      const event = pendingGlobalCapture;
+      windowsSurface.stage(event.response);
       pendingGlobalCapture = null;
-      void global.analyzeActiveTextSurface({ configurationRequired });
+      void global.analyzeActiveTextSurface(
+        event.invocationId,
+        { configurationRequired },
+      );
     }
   });
 

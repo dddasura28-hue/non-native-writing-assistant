@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import {
   TauriWindowsGlobalShortcutBridge,
+  FloatingAssistantPresentationOwner,
   presentationForCapturedShortcut,
   type FloatingAssistantPresentation,
   type WindowsGlobalShortcutBridge,
@@ -15,6 +16,9 @@ export function GlobalAssistantWindow({
   createBridge = () => new TauriWindowsGlobalShortcutBridge(),
 }: GlobalAssistantWindowProps) {
   const [bridge] = useState(createBridge);
+  const [presentationOwner] = useState(
+    () => new FloatingAssistantPresentationOwner(),
+  );
   const [presentation, setPresentation] =
     useState<FloatingAssistantPresentation | null>(null);
 
@@ -26,18 +30,10 @@ export function GlobalAssistantWindow({
       if (disposed) {
         return;
       }
-      setPresentation((current) => {
-        if (current === null || next.invocationId > current.invocationId) {
-          return next;
-        }
-        if (
-          next.invocationId === current.invocationId &&
-          statusRank(next) >= statusRank(current)
-        ) {
-          return next;
-        }
-        return current;
-      });
+      const accepted = presentationOwner.accept(next);
+      if (accepted !== null) {
+        setPresentation(accepted);
+      }
     };
 
     void bridge.listenForCaptures((event) => {
@@ -64,7 +60,7 @@ export function GlobalAssistantWindow({
       }
       document.body.classList.remove("global-assistant-body");
     };
-  }, [bridge]);
+  }, [bridge, presentationOwner]);
 
   return (
     <main className="global-assistant-shell" aria-label="Global writing assistance">
@@ -98,8 +94,4 @@ export function GlobalAssistantWindow({
       ) : null}
     </main>
   );
-}
-
-function statusRank(presentation: FloatingAssistantPresentation): number {
-  return presentation.status === "analyzing" ? 0 : 1;
 }

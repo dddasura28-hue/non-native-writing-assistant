@@ -57,11 +57,12 @@ export type NativeWindowsCaptureResponse =
 export function parseNativeWindowsCaptureResponse(
   value: unknown,
 ): NativeWindowsCaptureResponse | null {
-  if (typeof value !== "object" || value === null || !("status" in value)) {
+  if (!isRecord(value) || !("status" in value)) {
     return null;
   }
   if (value.status === "unavailable") {
     if (
+      !hasExactKeys(value, ["status", "reason"]) ||
       !("reason" in value) ||
       typeof value.reason !== "string" ||
       !WINDOWS_UNAVAILABLE_REASONS.has(value.reason)
@@ -75,14 +76,23 @@ export function parseNativeWindowsCaptureResponse(
   }
   if (
     value.status !== "captured" ||
+    !hasExactKeys(value, ["status", "capture"]) ||
     !("capture" in value) ||
-    typeof value.capture !== "object" ||
-    value.capture === null
+    !isRecord(value.capture)
   ) {
     return null;
   }
   const capture = value.capture;
+  const allowedCaptureKeys = [
+    "text",
+    "cursorOffset",
+    "selection",
+    "capabilities",
+    "captureToken",
+    ...(Object.hasOwn(capture, "anchor") ? ["anchor"] : []),
+  ];
   if (
+    !hasExactKeys(capture, allowedCaptureKeys) ||
     !("text" in capture) ||
     typeof capture.text !== "string" ||
     !("cursorOffset" in capture) ||
@@ -93,12 +103,20 @@ export function parseNativeWindowsCaptureResponse(
     typeof capture.captureToken !== "string" ||
     capture.captureToken.length === 0 ||
     !("capabilities" in capture) ||
-    !isNativeCapabilities(capture.capabilities)
+    !isNativeCapabilities(capture.capabilities) ||
+    capture.cursorOffset > capture.text.length ||
+    !isUtf16Boundary(capture.text, capture.cursorOffset) ||
+    (capture.selection !== null &&
+      (capture.selection.end > capture.text.length ||
+        !isUtf16Boundary(capture.text, capture.selection.start) ||
+        !isUtf16Boundary(capture.text, capture.selection.end))) ||
+    (!capture.capabilities.canObserveSelection && capture.selection !== null) ||
+    ("anchor" in capture && !isNativeExternalTextAnchor(capture.anchor))
   ) {
     return null;
   }
-  const anchor = "anchor" in capture && isNativeExternalTextAnchor(capture.anchor)
-    ? capture.anchor
+  const anchor: NativeExternalTextAnchor | undefined = "anchor" in capture
+    ? capture.anchor as NativeExternalTextAnchor
     : undefined;
   return {
     status: "captured",
@@ -124,7 +142,14 @@ export function parseNativeWindowsCaptureResponse(
 function isNativeExternalTextAnchor(
   value: unknown,
 ): value is NativeExternalTextAnchor {
-  return typeof value === "object" && value !== null &&
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "physicalX",
+      "physicalY",
+      "physicalWidth",
+      "physicalHeight",
+      "confidence",
+    ]) &&
     "physicalX" in value && isFiniteNumber(value.physicalX) &&
     "physicalY" in value && isFiniteNumber(value.physicalY) &&
     "physicalWidth" in value && isPositiveFiniteNumber(value.physicalWidth) &&
@@ -135,7 +160,8 @@ function isNativeExternalTextAnchor(
 
 function isNativeTextRangeOrNull(value: unknown): value is NativeTextRange | null {
   return value === null || (
-    typeof value === "object" && value !== null &&
+    isRecord(value) &&
+    hasExactKeys(value, ["start", "end"]) &&
     "start" in value && isNonnegativeSafeInteger(value.start) &&
     "end" in value && isNonnegativeSafeInteger(value.end) &&
     value.start <= value.end
@@ -143,7 +169,13 @@ function isNativeTextRangeOrNull(value: unknown): value is NativeTextRange | nul
 }
 
 function isNativeCapabilities(value: unknown): value is NativeWindowsTextSurfaceCapture["capabilities"] {
-  return typeof value === "object" && value !== null &&
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "canReplaceText",
+      "canObserveComposition",
+      "canObserveSelection",
+      "canProvideSurroundingText",
+    ]) &&
     "canReplaceText" in value && value.canReplaceText === false &&
     "canObserveComposition" in value && value.canObserveComposition === false &&
     "canObserveSelection" in value &&
@@ -164,6 +196,31 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isPositiveFiniteNumber(value: unknown): value is number {
   return isFiniteNumber(value) && value > 0;
+}
+
+function isUtf16Boundary(text: string, offset: number): boolean {
+  if (offset <= 0 || offset >= text.length) {
+    return true;
+  }
+  const previous = text.charCodeAt(offset - 1);
+  const next = text.charCodeAt(offset);
+  return !(
+    previous >= 0xd800 && previous <= 0xdbff &&
+    next >= 0xdc00 && next <= 0xdfff
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key));
 }
 
 const WINDOWS_UNAVAILABLE_REASONS: ReadonlySet<string> = new Set([

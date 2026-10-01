@@ -6,6 +6,8 @@ import {
 } from "../controller/global-desktop-assistant-controller.js";
 import {
   TauriWindowsGlobalShortcutBridge,
+  FloatingAssistantPresentationOwner,
+  LatestWindowsGlobalInvocation,
   createFloatingAssistantPresentation,
   presentationForCapturedShortcut,
   type WindowsGlobalCaptureEvent,
@@ -18,6 +20,7 @@ import type {
 function capture(
   text: string,
   anchor?: NativeExternalTextAnchor,
+  invocationId = 1,
 ): Extract<NativeWindowsCaptureResponse, { readonly status: "captured" }> {
   return {
     status: "captured",
@@ -31,7 +34,7 @@ function capture(
         canObserveSelection: true,
         canProvideSurroundingText: true,
       },
-      captureToken: "opaque",
+      captureToken: `windows-invocation-${invocationId}`,
       ...(anchor === undefined ? {} : { anchor }),
     },
   };
@@ -46,6 +49,7 @@ describe("Windows global shortcut bridge", () => {
 
     expect(presentation).toEqual({
       invocationId: 3,
+      presentationRevision: 0,
       status: "analyzing",
       statusMessage: "Analyzing captured text…",
       sourceText: "External 文本 😀",
@@ -80,6 +84,8 @@ describe("Windows global shortcut bridge", () => {
   it("publishes only the primary presentation-order variants", () => {
     const global: GlobalDesktopAssistantPresentation = {
       ...EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
+      invocationId: 8,
+      presentationRevision: 4,
       hostAvailable: true,
       sourceText: "Source",
       status: "completed",
@@ -115,7 +121,7 @@ describe("Windows global shortcut bridge", () => {
       },
     };
 
-    const floating = createFloatingAssistantPresentation(8, global);
+    const floating = createFloatingAssistantPresentation(global);
 
     expect(floating).toMatchObject({
       status: "completed",
@@ -129,15 +135,14 @@ describe("Windows global shortcut bridge", () => {
   });
 
   it("uses a compact configuration-required state", () => {
-    const floating = createFloatingAssistantPresentation(
-      9,
-      {
+    const floating = createFloatingAssistantPresentation({
         ...EMPTY_GLOBAL_DESKTOP_ASSISTANCE,
+        invocationId: 9,
+        presentationRevision: 2,
         hostAvailable: true,
         sourceText: "Captured source",
         status: "configuration-required",
-      },
-    );
+      });
     expect(floating).toMatchObject({
       status: "configuration-required",
       sourceText: "Captured source",
@@ -164,7 +169,7 @@ describe("Windows global shortcut bridge", () => {
 
     const emit = handler as unknown as (event: { payload: unknown }) => void;
     emit({ payload: { invocationId: 0, response: capture("bad") } });
-    emit({ payload: { invocationId: 1, response: capture("current") } });
+    emit({ payload: { invocationId: 1, response: capture("current", undefined, 1) } });
 
     expect(captures).toHaveLength(1);
     expect(captures[0]?.response).toEqual(capture("current"));
@@ -172,6 +177,110 @@ describe("Windows global shortcut bridge", () => {
       state: "unavailable",
       shortcut: "Ctrl+Alt+Space",
     });
+  });
+
+  it("rejects malformed IDs, ranges, shapes, token mismatches, and unavailable captures", async () => {
+    let handler: ((event: { payload: unknown }) => void) | null = null;
+    const bridge = new TauriWindowsGlobalShortcutBridge(
+      vi.fn(async (_name, next) => {
+        handler = next;
+        return () => undefined;
+      }),
+      vi.fn(async () => undefined),
+      async <T>() => ({
+        state: "registered",
+        shortcut: "Ctrl+Alt+Space",
+      }) as T,
+    );
+    const captures: WindowsGlobalCaptureEvent[] = [];
+    await bridge.listenForCaptures((event) => captures.push(event));
+    const emit = handler as unknown as (event: { payload: unknown }) => void;
+    const valid = capture("A😀B", undefined, 20);
+
+    for (const payload of [
+      { invocationId: Number.NaN, response: valid },
+      { invocationId: 20.5, response: valid },
+      { invocationId: 20, response: valid, unexpected: true },
+      {
+        invocationId: 20,
+        response: {
+          ...valid,
+          capture: { ...valid.capture, cursorOffset: 2 },
+        },
+      },
+      {
+        invocationId: 20,
+        response: {
+          ...valid,
+          capture: {
+            ...valid.capture,
+            selection: { start: 2, end: 3 },
+          },
+        },
+      },
+      {
+        invocationId: 20,
+        response: {
+          ...valid,
+          capture: { ...valid.capture, unexpected: "metadata" },
+        },
+      },
+      { invocationId: 21, response: valid },
+      {
+        invocationId: 22,
+        response: {
+          status: "unavailable",
+          reason: "protected-field",
+          capture: valid.capture,
+        },
+      },
+    ]) {
+      emit({ payload });
+    }
+
+    expect(captures).toEqual([]);
+  });
+
+  it("rejects malformed floating presentation events", async () => {
+    let handler: ((event: { payload: unknown }) => void) | null = null;
+    const bridge = new TauriWindowsGlobalShortcutBridge(
+      vi.fn(async (_name, next) => {
+        handler = next;
+        return () => undefined;
+      }),
+      vi.fn(async () => undefined),
+      async <T>() => ({
+        state: "registered",
+        shortcut: "Ctrl+Alt+Space",
+      }) as T,
+    );
+    const presentations: unknown[] = [];
+    await bridge.listenForPresentations((value) => presentations.push(value));
+    const emit = handler as unknown as (event: { payload: unknown }) => void;
+
+    emit({ payload: {
+      invocationId: 1,
+      presentationRevision: 0,
+      status: "completed",
+      statusMessage: "unsafe",
+      sourceText: null,
+      nativeIntentText: null,
+      normalizedText: null,
+      readOnly: true,
+    } });
+    emit({ payload: {
+      invocationId: 1,
+      presentationRevision: 1,
+      status: "completed",
+      statusMessage: "unsafe",
+      sourceText: null,
+      nativeIntentText: null,
+      normalizedText: null,
+      readOnly: true,
+      unexpected: true,
+    } });
+
+    expect(presentations).toEqual([]);
   });
 
   it("maps optional geometry with its invocation and strips malformed geometry", async () => {
@@ -198,14 +307,14 @@ describe("Windows global shortcut bridge", () => {
     };
     const emit = handler as unknown as (event: { payload: unknown }) => void;
 
-    emit({ payload: { invocationId: 11, response: capture("current", validAnchor) } });
+    emit({ payload: { invocationId: 11, response: capture("current", validAnchor, 11) } });
     emit({
       payload: {
         invocationId: 12,
         response: capture("still analyzable", {
           ...validAnchor,
           physicalWidth: Number.NaN,
-        }),
+        }, 12),
       },
     });
 
@@ -216,12 +325,43 @@ describe("Windows global shortcut bridge", () => {
     const presentation = presentationForCapturedShortcut(captures[0]!);
     expect(presentation.invocationId).toBe(11);
     expect(JSON.stringify(presentation)).not.toContain("physicalX");
-    expect(captures[1]).toMatchObject({
-      invocationId: 12,
-      response: { status: "captured", capture: { text: "still analyzable" } },
+    expect(captures).toHaveLength(1);
+  });
+
+  it("keeps same-text invocations distinct and rejects delayed capture A", () => {
+    const owner = new LatestWindowsGlobalInvocation();
+
+    expect(owner.begin(41)).toBe(true);
+    expect(owner.begin(42)).toBe(true);
+    expect(owner.begin(41)).toBe(false);
+    expect(owner.currentInvocationId).toBe(42);
+  });
+
+  it("prevents stale or duplicate presentations from taking visible ownership", () => {
+    const owner = new FloatingAssistantPresentationOwner();
+    const presentation = (
+      invocationId: number,
+      presentationRevision: number,
+      status: "analyzing" | "completed" | "failed",
+    ) => ({
+      invocationId,
+      presentationRevision,
+      status,
+      statusMessage: status,
+      sourceText: `source-${invocationId}`,
+      nativeIntentText: null,
+      normalizedText: null,
+      readOnly: true as const,
     });
-    if (captures[1]?.response.status === "captured") {
-      expect(captures[1].response.capture.anchor).toBeUndefined();
-    }
+
+    expect(owner.accept(presentation(2, 1, "analyzing"))).not.toBeNull();
+    expect(owner.accept(presentation(2, 3, "completed"))).not.toBeNull();
+    expect(owner.accept(presentation(2, 2, "failed"))).toBeNull();
+    expect(owner.accept(presentation(1, 9, "failed"))).toBeNull();
+    expect(owner.current).toMatchObject({
+      invocationId: 2,
+      presentationRevision: 3,
+      status: "completed",
+    });
   });
 });

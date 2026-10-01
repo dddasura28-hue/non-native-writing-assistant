@@ -40,6 +40,7 @@ export type FloatingAssistantStatus =
 
 export interface FloatingAssistantPresentation {
   readonly invocationId: number;
+  readonly presentationRevision: number;
   readonly status: FloatingAssistantStatus;
   readonly statusMessage: string;
   readonly sourceText: string | null;
@@ -148,6 +149,7 @@ export function presentationForCapturedShortcut(
   if (event.response.status === "unavailable") {
     return Object.freeze({
       invocationId: event.invocationId,
+      presentationRevision: 0,
       status: "unsupported",
       statusMessage: "No editable writing field focused.",
       sourceText: null,
@@ -158,6 +160,7 @@ export function presentationForCapturedShortcut(
   }
   return Object.freeze({
     invocationId: event.invocationId,
+    presentationRevision: 0,
     status: "analyzing",
     statusMessage: "Analyzing captured text…",
     sourceText: event.response.capture.text,
@@ -168,9 +171,11 @@ export function presentationForCapturedShortcut(
 }
 
 export function createFloatingAssistantPresentation(
-  invocationId: number,
   presentation: GlobalDesktopAssistantPresentation,
 ): FloatingAssistantPresentation {
+  if (presentation.invocationId === null) {
+    throw new TypeError("A global invocation is required for floating presentation.");
+  }
   const active = presentation.assistance.active;
   const status = presentation.status === "configuration-required"
     ? "configuration-required"
@@ -196,7 +201,8 @@ export function createFloatingAssistantPresentation(
           : "Analysis is unavailable. Check the main app settings.";
 
   return Object.freeze({
-    invocationId,
+    invocationId: presentation.invocationId,
+    presentationRevision: presentation.presentationRevision,
     status,
     statusMessage,
     sourceText: status === "unsupported" ? null : presentation.sourceText,
@@ -214,8 +220,8 @@ function parseWindowsGlobalCaptureEvent(
   value: unknown,
 ): WindowsGlobalCaptureEvent | null {
   if (
-    typeof value !== "object" ||
-    value === null ||
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["invocationId", "response"]) ||
     !("invocationId" in value) ||
     typeof value.invocationId !== "number" ||
     !Number.isSafeInteger(value.invocationId) ||
@@ -225,19 +231,38 @@ function parseWindowsGlobalCaptureEvent(
     return null;
   }
   const response = parseNativeWindowsCaptureResponse(value.response);
-  return response === null
-    ? null
-    : { invocationId: value.invocationId, response };
+  if (
+    response === null ||
+    (response.status === "captured" &&
+      response.capture.captureToken !== invocationToken(value.invocationId))
+  ) {
+    return null;
+  }
+  return { invocationId: value.invocationId, response };
 }
 
 function isFloatingAssistantPresentation(
   value: unknown,
 ): value is FloatingAssistantPresentation {
-  return typeof value === "object" && value !== null &&
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      "invocationId",
+      "presentationRevision",
+      "status",
+      "statusMessage",
+      "sourceText",
+      "nativeIntentText",
+      "normalizedText",
+      "readOnly",
+    ]) &&
     "invocationId" in value &&
     typeof value.invocationId === "number" &&
     Number.isSafeInteger(value.invocationId) &&
     value.invocationId > 0 &&
+    "presentationRevision" in value &&
+    typeof value.presentationRevision === "number" &&
+    Number.isSafeInteger(value.presentationRevision) &&
+    value.presentationRevision >= 1 &&
     "status" in value &&
     typeof value.status === "string" &&
     FLOATING_ASSISTANT_STATUSES.has(value.status) &&
@@ -247,6 +272,55 @@ function isFloatingAssistantPresentation(
     "nativeIntentText" in value && isNullableString(value.nativeIntentText) &&
     "normalizedText" in value && isNullableString(value.normalizedText) &&
     "readOnly" in value && value.readOnly === true;
+}
+
+/** Accepts each native invocation once and rejects delayed or duplicate events. */
+export class LatestWindowsGlobalInvocation {
+  #currentInvocationId = 0;
+
+  get currentInvocationId(): number {
+    return this.#currentInvocationId;
+  }
+
+  begin(invocationId: number): boolean {
+    if (
+      !Number.isSafeInteger(invocationId) ||
+      invocationId <= this.#currentInvocationId
+    ) {
+      return false;
+    }
+    this.#currentInvocationId = invocationId;
+    return true;
+  }
+
+  isCurrent(invocationId: number): boolean {
+    return invocationId === this.#currentInvocationId;
+  }
+}
+
+/** Owns the visible floating state independently from React scheduling. */
+export class FloatingAssistantPresentationOwner {
+  #current: FloatingAssistantPresentation | null = null;
+
+  get current(): FloatingAssistantPresentation | null {
+    return this.#current;
+  }
+
+  accept(
+    next: FloatingAssistantPresentation,
+  ): FloatingAssistantPresentation | null {
+    const current = this.#current;
+    if (
+      current !== null &&
+      (next.invocationId < current.invocationId ||
+        (next.invocationId === current.invocationId &&
+          next.presentationRevision <= current.presentationRevision))
+    ) {
+      return null;
+    }
+    this.#current = next;
+    return next;
+  }
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -260,3 +334,19 @@ const FLOATING_ASSISTANT_STATUSES: ReadonlySet<string> = new Set([
   "unsupported",
   "failed",
 ]);
+
+function invocationToken(invocationId: number): string {
+  return `windows-invocation-${invocationId}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}

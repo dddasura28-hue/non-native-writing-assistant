@@ -10,23 +10,11 @@ mod uia;
 pub(crate) use model::build_capture;
 use model::unavailable;
 pub(crate) use model::{WindowsCaptureUnavailableReason, WindowsTextSurfaceCaptureResponse};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[derive(Default)]
-pub struct WindowsCaptureSequence(AtomicU64);
-
-impl WindowsCaptureSequence {
-    fn next_token(&self) -> String {
-        let value = self.0.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("windows-capture-{value}")
-    }
-}
 
 pub fn capture_active_windows_text_surface_now(
-    sequence: &WindowsCaptureSequence,
+    capture_token: String,
 ) -> WindowsTextSurfaceCaptureResponse {
-    let token = sequence.next_token();
-    std::thread::spawn(move || capture_on_platform(token))
+    std::thread::spawn(move || capture_on_platform(capture_token))
         .join()
         .unwrap_or_else(|_| unavailable(WindowsCaptureUnavailableReason::NativeUiaUnavailable))
 }
