@@ -156,7 +156,7 @@ describe("GlobalAssistantWindow", () => {
       response: { status: "unavailable", reason: "protected-field" },
     }));
 
-    expect(container.textContent).toContain("No supported Windows text field");
+    expect(container.textContent).toContain("No editable writing field focused");
     expect(container.textContent).not.toContain("Long external");
     expect(container.textContent).not.toContain("protected-field");
   });

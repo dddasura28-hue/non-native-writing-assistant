@@ -10,6 +10,7 @@ export type WindowsCaptureUnavailableReason =
   | "protected-field"
   | "disabled-element"
   | "not-focusable"
+  | "not-editable"
   | "unsupported-text-pattern"
   | "selection-unavailable"
   | "multiple-selection"
@@ -171,6 +172,7 @@ const WINDOWS_UNAVAILABLE_REASONS: ReadonlySet<string> = new Set([
   "protected-field",
   "disabled-element",
   "not-focusable",
+  "not-editable",
   "unsupported-text-pattern",
   "selection-unavailable",
   "multiple-selection",

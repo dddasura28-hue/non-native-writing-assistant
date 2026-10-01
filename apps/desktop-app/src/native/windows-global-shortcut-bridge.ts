@@ -149,7 +149,7 @@ export function presentationForCapturedShortcut(
     return Object.freeze({
       invocationId: event.invocationId,
       status: "unsupported",
-      statusMessage: "No supported Windows text field is active.",
+      statusMessage: "No editable writing field focused.",
       sourceText: null,
       nativeIntentText: null,
       normalizedText: null,
@@ -192,7 +192,7 @@ export function createFloatingAssistantPresentation(
       : status === "analyzing"
         ? "Analyzing captured text…"
         : status === "unsupported"
-          ? "No supported Windows text field is active."
+          ? "No editable writing field focused."
           : "Analysis is unavailable. Check the main app settings.";
 
   return Object.freeze({

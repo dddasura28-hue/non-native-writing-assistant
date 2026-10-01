@@ -2,8 +2,9 @@ use super::geometry::{
     adjacent_caret_anchor, selection_anchor, AdjacentCaretSide, ExternalTextAnchor,
 };
 use super::model::{
-    build_capture, unavailable, ElementFacts, NativeTextRange,
-    WindowsCaptureUnavailableReason as Unavailable, WindowsTextSurfaceCaptureResponse,
+    build_capture, qualify_focused_element, unavailable, ElementFacts, FocusedControlType,
+    NativeTextRange, WindowsCaptureUnavailableReason as Unavailable,
+    WindowsTextSurfaceCaptureResponse, CONTEXT_CHARACTERS_PER_SIDE,
 };
 use windows::core::{Interface, BOOL, BSTR};
 use windows::Win32::System::Com::{
@@ -14,13 +15,13 @@ use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetElemsize,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2,
-    IUIAutomationTextRange, IUIAutomationValuePattern, TextPatternRangeEndpoint_End,
-    TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
-    UIA_ValuePatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationTextEditPattern, IUIAutomationTextPattern,
+    IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+    UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextEditPatternId, UIA_TextPattern2Id,
+    UIA_TextPatternId, UIA_ValuePatternId,
 };
 
-const CONTEXT_CHARACTERS_PER_SIDE: i32 = 8_192;
 const MAX_BOUNDING_VALUES: usize = 256 * 4;
 
 pub fn capture_active_text_surface(token: String) -> WindowsTextSurfaceCaptureResponse {
@@ -51,9 +52,23 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
     let enabled = unsafe { element.CurrentIsEnabled() }
         .map_err(|_| Unavailable::ElementDisappeared)?
         .as_bool();
+    let has_keyboard_focus = unsafe { element.CurrentHasKeyboardFocus() }
+        .map_err(|_| Unavailable::ElementDisappeared)?
+        .as_bool();
     let keyboard_focusable = unsafe { element.CurrentIsKeyboardFocusable() }
         .map_err(|_| Unavailable::ElementDisappeared)?
         .as_bool();
+    let control_type = match unsafe { element.CurrentControlType() }
+        .map_err(|_| Unavailable::ElementDisappeared)?
+    {
+        value if value == UIA_EditControlTypeId => FocusedControlType::Edit,
+        value if value == UIA_DocumentControlTypeId => FocusedControlType::Document,
+        _ => FocusedControlType::Other,
+    };
+    let text_edit_pattern = unsafe {
+        element.GetCurrentPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
+    }
+    .ok();
     let text_pattern2 =
         unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }
             .ok();
@@ -63,17 +78,31 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
         .or_else(|| {
             unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
                 .ok()
+        })
+        .or_else(|| {
+            text_edit_pattern
+                .as_ref()
+                .and_then(|pattern| pattern.cast::<IUIAutomationTextPattern>().ok())
         });
-    let _value_pattern_available =
+    let value_pattern =
         unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
-            .is_ok();
+            .ok();
+    let value_pattern_read_only = value_pattern.as_ref().map(|pattern| {
+        unsafe { pattern.CurrentIsReadOnly() }
+            .map(|read_only| read_only.as_bool())
+            .unwrap_or(true)
+    });
 
-    super::model::validate_element(ElementFacts {
+    qualify_focused_element(ElementFacts {
         own_process: false,
         protected,
         enabled,
+        has_keyboard_focus,
         keyboard_focusable,
+        control_type,
         has_text_pattern: text_pattern.is_some(),
+        has_text_edit_pattern: text_edit_pattern.is_some(),
+        value_pattern_read_only,
     })?;
 
     let text_pattern = text_pattern.ok_or(Unavailable::UnsupportedTextPattern)?;

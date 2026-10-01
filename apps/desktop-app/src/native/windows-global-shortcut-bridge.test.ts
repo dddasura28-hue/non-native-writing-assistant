@@ -56,7 +56,11 @@ describe("Windows global shortcut bridge", () => {
   });
 
   it("clears Source for protected and unsupported captures", () => {
-    for (const reason of ["protected-field", "own-process"] as const) {
+    for (const reason of [
+      "protected-field",
+      "not-editable",
+      "own-process",
+    ] as const) {
       const presentation = presentationForCapturedShortcut({
         invocationId: 4,
         response: { status: "unavailable", reason },
@@ -67,6 +71,9 @@ describe("Windows global shortcut bridge", () => {
         normalizedText: null,
       });
       expect(JSON.stringify(presentation)).not.toContain(reason);
+      expect(presentation.statusMessage).toBe(
+        "No editable writing field focused.",
+      );
     }
   });
 

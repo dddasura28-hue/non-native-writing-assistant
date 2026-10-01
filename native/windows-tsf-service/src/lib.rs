@@ -10,6 +10,7 @@ mod diagnostics;
 pub mod identity;
 mod lifetime;
 pub mod registration;
+mod registration_workflow;
 
 use component::TextServiceClassFactory;
 use identity::TEXT_SERVICE_CLSID;

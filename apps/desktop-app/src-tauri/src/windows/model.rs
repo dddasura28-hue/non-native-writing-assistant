@@ -10,12 +10,15 @@ pub enum WindowsCaptureUnavailableReason {
     ProtectedField,
     DisabledElement,
     NotFocusable,
+    NotEditable,
     UnsupportedTextPattern,
     SelectionUnavailable,
     MultipleSelection,
     ElementDisappeared,
     NativeUiaUnavailable,
 }
+
+pub const CONTEXT_CHARACTERS_PER_SIDE: i32 = 8_192;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,15 +73,26 @@ pub enum WindowsTextSurfaceCaptureResponse {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusedControlType {
+    Edit,
+    Document,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ElementFacts {
     pub own_process: bool,
     pub protected: bool,
     pub enabled: bool,
+    pub has_keyboard_focus: bool,
     pub keyboard_focusable: bool,
+    pub control_type: FocusedControlType,
     pub has_text_pattern: bool,
+    pub has_text_edit_pattern: bool,
+    pub value_pattern_read_only: Option<bool>,
 }
 
-pub fn validate_element(facts: ElementFacts) -> Result<(), WindowsCaptureUnavailableReason> {
+pub fn qualify_focused_element(facts: ElementFacts) -> Result<(), WindowsCaptureUnavailableReason> {
     if facts.own_process {
         return Err(WindowsCaptureUnavailableReason::OwnProcess);
     }
@@ -88,11 +102,23 @@ pub fn validate_element(facts: ElementFacts) -> Result<(), WindowsCaptureUnavail
     if !facts.enabled {
         return Err(WindowsCaptureUnavailableReason::DisabledElement);
     }
+    if !facts.has_keyboard_focus {
+        return Err(WindowsCaptureUnavailableReason::NoFocusedElement);
+    }
     if !facts.keyboard_focusable {
         return Err(WindowsCaptureUnavailableReason::NotFocusable);
     }
+    if facts.control_type != FocusedControlType::Edit {
+        return Err(WindowsCaptureUnavailableReason::NotEditable);
+    }
     if !facts.has_text_pattern {
         return Err(WindowsCaptureUnavailableReason::UnsupportedTextPattern);
+    }
+    if facts.value_pattern_read_only == Some(true) {
+        return Err(WindowsCaptureUnavailableReason::NotEditable);
+    }
+    if !facts.has_text_edit_pattern && facts.value_pattern_read_only != Some(false) {
+        return Err(WindowsCaptureUnavailableReason::NotEditable);
     }
     Ok(())
 }
@@ -141,6 +167,20 @@ pub fn unavailable(reason: WindowsCaptureUnavailableReason) -> WindowsTextSurfac
 mod tests {
     use super::*;
     use crate::windows::geometry::ExternalTextAnchorConfidence;
+
+    fn editable_facts() -> ElementFacts {
+        ElementFacts {
+            own_process: false,
+            protected: false,
+            enabled: true,
+            has_keyboard_focus: true,
+            keyboard_focusable: true,
+            control_type: FocusedControlType::Edit,
+            has_text_pattern: true,
+            has_text_edit_pattern: false,
+            value_pattern_read_only: Some(false),
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     enum GuardedWriteError {
@@ -227,12 +267,9 @@ mod tests {
     #[test]
     fn protected_control_is_rejected() {
         assert_eq!(
-            validate_element(ElementFacts {
-                own_process: false,
+            qualify_focused_element(ElementFacts {
                 protected: true,
-                enabled: true,
-                keyboard_focusable: true,
-                has_text_pattern: true,
+                ..editable_facts()
             }),
             Err(WindowsCaptureUnavailableReason::ProtectedField)
         );
@@ -241,12 +278,9 @@ mod tests {
     #[test]
     fn own_process_control_is_rejected() {
         assert_eq!(
-            validate_element(ElementFacts {
+            qualify_focused_element(ElementFacts {
                 own_process: true,
-                protected: false,
-                enabled: true,
-                keyboard_focusable: true,
-                has_text_pattern: true,
+                ..editable_facts()
             }),
             Err(WindowsCaptureUnavailableReason::OwnProcess)
         );
@@ -255,15 +289,150 @@ mod tests {
     #[test]
     fn unsupported_element_is_unavailable() {
         assert_eq!(
-            validate_element(ElementFacts {
-                own_process: false,
-                protected: false,
-                enabled: true,
-                keyboard_focusable: true,
+            qualify_focused_element(ElementFacts {
                 has_text_pattern: false,
+                ..editable_facts()
             }),
             Err(WindowsCaptureUnavailableReason::UnsupportedTextPattern)
         );
+    }
+
+    #[test]
+    fn browser_text_input_and_textarea_like_writable_edits_are_accepted() {
+        let text_input = editable_facts();
+        let textarea = ElementFacts {
+            has_text_edit_pattern: true,
+            ..editable_facts()
+        };
+
+        for provider_shape in [text_input, textarea] {
+            assert_eq!(qualify_focused_element(provider_shape), Ok(()));
+        }
+    }
+
+    #[test]
+    fn edit_shaped_contenteditable_with_text_edit_pattern_is_accepted() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                has_text_edit_pattern: true,
+                value_pattern_read_only: None,
+                ..editable_facts()
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn disabled_edit_is_rejected() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                enabled: false,
+                ..editable_facts()
+            }),
+            Err(WindowsCaptureUnavailableReason::DisabledElement)
+        );
+    }
+
+    #[test]
+    fn element_that_lost_keyboard_focus_is_rejected() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                has_keyboard_focus: false,
+                ..editable_facts()
+            }),
+            Err(WindowsCaptureUnavailableReason::NoFocusedElement)
+        );
+    }
+
+    #[test]
+    fn generic_document_is_rejected_even_with_text_patterns() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                control_type: FocusedControlType::Document,
+                has_text_edit_pattern: true,
+                ..editable_facts()
+            }),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+    }
+
+    #[test]
+    fn text_pattern_alone_does_not_prove_editability() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                has_text_edit_pattern: false,
+                value_pattern_read_only: None,
+                ..editable_facts()
+            }),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+    }
+
+    #[test]
+    fn read_only_value_pattern_overrides_other_editability_signals() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                has_text_edit_pattern: true,
+                value_pattern_read_only: Some(true),
+                ..editable_facts()
+            }),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+    }
+
+    #[test]
+    fn browser_fixture_captures_only_the_focused_editable_surface() {
+        let page = "Dashboard\nBuild logs...\nconst foo = ...\nNavigation";
+        let focused = "I think this method have problem.";
+        qualify_focused_element(editable_facts()).unwrap();
+
+        let capture = build_capture(
+            focused.into(),
+            focused.len(),
+            None,
+            true,
+            true,
+            "browser-editable".into(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(capture.text, focused);
+        for unrelated in page.lines() {
+            assert!(!capture.text.contains(unrelated));
+        }
+    }
+
+    #[test]
+    fn ambiguous_nested_browser_provider_does_not_promote_its_document_ancestor() {
+        let focused = ElementFacts {
+            control_type: FocusedControlType::Other,
+            has_text_pattern: false,
+            has_text_edit_pattern: false,
+            value_pattern_read_only: None,
+            ..editable_facts()
+        };
+        let broad_ancestor = ElementFacts {
+            control_type: FocusedControlType::Document,
+            has_text_pattern: true,
+            has_text_edit_pattern: false,
+            value_pattern_read_only: Some(true),
+            ..editable_facts()
+        };
+
+        assert_eq!(
+            qualify_focused_element(focused),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+        assert_eq!(
+            qualify_focused_element(broad_ancestor),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+    }
+
+    #[test]
+    fn capture_window_limit_remains_bounded_per_caret_side() {
+        assert_eq!(CONTEXT_CHARACTERS_PER_SIDE, 8_192);
     }
 
     #[test]
@@ -459,13 +628,19 @@ mod tests {
     }
 
     #[test]
-    fn protected_unavailable_payload_exposes_neither_text_nor_geometry() {
-        let payload =
-            serde_json::to_value(unavailable(WindowsCaptureUnavailableReason::ProtectedField))
-                .unwrap();
-        assert_eq!(payload["status"], "unavailable");
-        assert_eq!(payload["reason"], "protected-field");
-        assert!(payload.get("capture").is_none());
-        assert!(payload.get("anchor").is_none());
+    fn unavailable_payloads_expose_neither_text_nor_geometry() {
+        for (reason, serialized_reason) in [
+            (
+                WindowsCaptureUnavailableReason::ProtectedField,
+                "protected-field",
+            ),
+            (WindowsCaptureUnavailableReason::NotEditable, "not-editable"),
+        ] {
+            let payload = serde_json::to_value(unavailable(reason)).unwrap();
+            assert_eq!(payload["status"], "unavailable");
+            assert_eq!(payload["reason"], serialized_reason);
+            assert!(payload.get("capture").is_none());
+            assert!(payload.get("anchor").is_none());
+        }
     }
 }

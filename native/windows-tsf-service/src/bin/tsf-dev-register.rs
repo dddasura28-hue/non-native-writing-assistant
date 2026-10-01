@@ -24,9 +24,17 @@ fn main() {
     };
 
     match result {
-        Ok(()) => println!("TSF development registration command completed."),
-        Err(error) => {
-            eprintln!("TSF development registration failed: {error}");
+        Ok(report) => {
+            for diagnostic in report.diagnostics {
+                println!("{diagnostic}");
+            }
+            println!("TSF development registration command completed.");
+        }
+        Err(failure) => {
+            for diagnostic in &failure.diagnostics {
+                eprintln!("{diagnostic}");
+            }
+            eprintln!("{failure}");
             std::process::exit(1);
         }
     }

@@ -1,8 +1,13 @@
 # Windows TSF Native Component Prototype v1
 
-This directory builds a development-only x64 COM in-process text service. It is a passive,
-read-only feasibility probe. It has no provider, network, IPC, UI, or text-mutation path and is not
-loaded by the desktop app. The working UI Automation global assistant remains unchanged.
+This directory builds a development-only x64 COM in-process text service. It is an isolated,
+read-only feasibility probe retained for experimental research. It is not the product runtime, a
+user-facing Windows input language, a replacement keyboard or IME, or a prerequisite for the
+desktop app. Its development keyboard profiles are only a manual prototype mechanism and do not
+define product direction. It has no provider, network, IPC, UI, or text-mutation path, is not loaded
+by the desktop app, and has no planned product Host Bridge in this phase. The standalone Tauri app,
+manual global shortcut, conservative UI Automation adapter, and floating assistant remain the
+product path.
 
 The DLL exposes `DllGetClassObject`, `DllCanUnloadNow`, a COM class factory, and
 `ITfTextInputProcessorEx`/`ITfTextInputProcessor`. Activation observes thread-manager focus and
@@ -54,8 +59,23 @@ $dll = (Resolve-Path .\native\windows-tsf-service\target\x86_64-pc-windows-msvc\
 
 The registration implementation uses the standard COM `InprocServer32` value with
 `ThreadingModel=Apartment`, `ITfInputProcessorProfiles` for the service and profiles, and
-`ITfCategoryMgr` for the one development category. If registration fails partway, run the rollback
-command below before retrying.
+`ITfCategoryMgr` for the one development category. The command reports every probe and operation,
+including the language/profile or category GUID where relevant. A failure summary retains the exact
+stage, HRESULT, and Windows message even when a later rollback action also fails.
+
+Registration probes this prototype's COM entry, TSF service, two profiles, enabled state, and one
+category before changing them. Matching pre-existing state is reported as `[skip]` and preserved. A
+conflicting COM entry for the fixed development CLSID causes registration to stop without changing
+it. State absent at the probe and then created or changed by the current invocation is recorded in a
+reverse-action ledger. A later failure runs that ledger in reverse and reports each action as
+`[rollback-ok]` or `[rollback-fail]`; rollback diagnostics never replace the original error. This
+best-effort ownership assumes registration commands for this one development CLSID are not run
+concurrently.
+
+After a write, the command reads the registry back and requires the exact supplied DLL path plus
+`ThreadingModel=Apartment`. It does not load the DLL for verification. Each language profile uses
+the fixed service CLSID, LANGID, profile GUID, exact UTF-16 description length, and no optional icon
+(null icon path, zero length, index zero).
 
 ## Manual proof procedure
 
@@ -101,8 +121,12 @@ PowerShell session:
 The command disables and removes both development language profiles, removes the keyboard category,
 unregisters the TSF service, and deletes only this prototype's x64 COM CLSID tree. Close and reopen
 test applications, then confirm the two development profiles no longer appear in the Windows input
-switcher. The tool does not alter Microsoft Pinyin or any unrelated profile.
+switcher. Cleanup also probes each item, reports every stage, treats already-absent items as a safe
+`[skip]`, and continues best-effort cleanup after an individual failure while retaining the first
+failure in the final summary. The tool does not alter Microsoft Pinyin or any unrelated profile.
 
-This unsigned development DLL is not suitable for distribution. Production deployment would need
-code signing, installer ownership, x86 and ARM64 artifacts where supported, compatibility and secure
-field testing, and a proven activation/category model.
+This unsigned development DLL is not suitable for distribution and no production deployment is
+planned. If the research is ever resumed, any distribution proposal would require a new product and
+security decision covering code signing, installer ownership, supported architectures,
+compatibility and secure-field testing, and an activation model that does not displace the user's
+existing input method.

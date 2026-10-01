@@ -187,12 +187,34 @@ describe("WindowsActiveTextSurfacePort", () => {
     expect(port.lastUnavailableReason).toBe("native-uia-unavailable");
   });
 
-  it("maps protected and unsupported fields to unavailable captures", async () => {
-    for (const reason of ["protected-field", "unsupported-text-pattern"] as const) {
+  it("maps protected, non-editable and unsupported fields to unavailable captures", async () => {
+    for (const reason of [
+      "protected-field",
+      "not-editable",
+      "unsupported-text-pattern",
+    ] as const) {
       const port = portWith({ status: "unavailable", reason });
       await expect(port.capture()).resolves.toBeNull();
       expect(port.lastUnavailableReason).toBe(reason);
     }
+  });
+
+  it("clears a staged editable capture when focus moves to unsupported page content", async () => {
+    const port = new WindowsActiveTextSurfacePort();
+    port.stage(captured("Editable field", {
+      anchor: {
+        physicalX: 100,
+        physicalY: 200,
+        physicalWidth: 1,
+        physicalHeight: 20,
+        confidence: "approximate",
+      },
+    }));
+    port.stage({ status: "unavailable", reason: "not-editable" });
+
+    await expect(port.capture()).resolves.toBeNull();
+    expect(port.lastUnavailableReason).toBe("not-editable");
+    await expect(port.capture()).resolves.toBeNull();
   });
 
   it("consumes a staged native snapshot exactly once", async () => {

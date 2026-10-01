@@ -107,6 +107,10 @@ describe("desktop dependency boundaries", () => {
     expect(rustSource).not.toMatch(
       /SendInput|SendKeys|OpenClipboard|SetClipboardData|RegisterHotKey|\.Select\s*\(|ScrollIntoView/,
     );
+    const uiaSource = readFileSync(resolve(rustRoot, "uia.rs"), "utf8");
+    expect(uiaSource).not.toMatch(
+      /TreeWalker|GetParentElement|FindFirst|FindAll|DocumentRange/,
+    );
     const shortcutSource = readFileSync(
       resolve(
         repositoryRoot,
