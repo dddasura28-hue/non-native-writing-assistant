@@ -3,6 +3,9 @@ mod provider_settings;
 mod secret_store;
 mod windows;
 
+#[cfg(any(target_os = "windows", test))]
+mod global_diagnostics;
+
 #[cfg(target_os = "windows")]
 use tauri::Manager;
 

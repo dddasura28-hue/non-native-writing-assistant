@@ -108,7 +108,10 @@ pub fn qualify_focused_element(facts: ElementFacts) -> Result<(), WindowsCapture
     if !facts.keyboard_focusable {
         return Err(WindowsCaptureUnavailableReason::NotFocusable);
     }
-    if facts.control_type != FocusedControlType::Edit {
+    if !matches!(
+        facts.control_type,
+        FocusedControlType::Edit | FocusedControlType::Document
+    ) {
         return Err(WindowsCaptureUnavailableReason::NotEditable);
     }
     if !facts.has_text_pattern {
@@ -345,15 +348,153 @@ mod tests {
     }
 
     #[test]
-    fn generic_document_is_rejected_even_with_text_patterns() {
+    fn focused_page_body_document_with_text_pattern_only_is_rejected() {
         assert_eq!(
             qualify_focused_element(ElementFacts {
                 control_type: FocusedControlType::Document,
-                has_text_edit_pattern: true,
+                has_text_edit_pattern: false,
+                value_pattern_read_only: None,
                 ..editable_facts()
             }),
             Err(WindowsCaptureUnavailableReason::NotEditable)
         );
+    }
+
+    #[test]
+    fn focused_document_with_text_edit_pattern_is_accepted() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                control_type: FocusedControlType::Document,
+                has_text_edit_pattern: true,
+                value_pattern_read_only: None,
+                ..editable_facts()
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn focused_document_with_writable_value_pattern_is_accepted() {
+        assert_eq!(
+            qualify_focused_element(ElementFacts {
+                control_type: FocusedControlType::Document,
+                has_text_edit_pattern: false,
+                value_pattern_read_only: Some(false),
+                ..editable_facts()
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn read_only_document_is_rejected_even_with_text_edit_pattern() {
+        for has_text_edit_pattern in [false, true] {
+            assert_eq!(
+                qualify_focused_element(ElementFacts {
+                    control_type: FocusedControlType::Document,
+                    has_text_edit_pattern,
+                    value_pattern_read_only: Some(true),
+                    ..editable_facts()
+                }),
+                Err(WindowsCaptureUnavailableReason::NotEditable)
+            );
+        }
+    }
+
+    #[test]
+    fn document_editability_evidence_never_overrides_security_focus_or_text_guards() {
+        let document = ElementFacts {
+            control_type: FocusedControlType::Document,
+            has_text_edit_pattern: true,
+            ..editable_facts()
+        };
+        for (facts, reason) in [
+            (
+                ElementFacts {
+                    protected: true,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::ProtectedField,
+            ),
+            (
+                ElementFacts {
+                    enabled: false,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::DisabledElement,
+            ),
+            (
+                ElementFacts {
+                    has_keyboard_focus: false,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::NoFocusedElement,
+            ),
+            (
+                ElementFacts {
+                    keyboard_focusable: false,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::NotFocusable,
+            ),
+            (
+                ElementFacts {
+                    own_process: true,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::OwnProcess,
+            ),
+            (
+                ElementFacts {
+                    has_text_pattern: false,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::UnsupportedTextPattern,
+            ),
+            (
+                ElementFacts {
+                    control_type: FocusedControlType::Other,
+                    ..document
+                },
+                WindowsCaptureUnavailableReason::NotEditable,
+            ),
+        ] {
+            assert_eq!(qualify_focused_element(facts), Err(reason));
+        }
+    }
+
+    #[test]
+    fn notepad_document_fixture_is_qualified_and_capture_proceeds() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            windows::Win32::UI::Accessibility::UIA_DocumentControlTypeId.0,
+            50030
+        );
+        // TextPattern2 is also available in the observed provider. It remains a
+        // capture/caret facility, not an additional editability requirement.
+        qualify_focused_element(ElementFacts {
+            control_type: FocusedControlType::Document,
+            has_text_pattern: true,
+            has_text_edit_pattern: true,
+            value_pattern_read_only: Some(false),
+            ..editable_facts()
+        })
+        .unwrap();
+        let source = "This method have problem. 中文 😀";
+        let capture = build_capture(
+            source.into(),
+            utf16_len(source),
+            None,
+            true,
+            true,
+            "notepad-document-fixture".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(capture.text, source);
+        assert_eq!(capture.cursor_offset, utf16_len(source));
+        assert!(!capture.capabilities.can_replace_text);
+        assert!(!capture.capabilities.can_observe_composition);
     }
 
     #[test]
@@ -384,22 +525,27 @@ mod tests {
     fn browser_fixture_captures_only_the_focused_editable_surface() {
         let page = "Dashboard\nBuild logs...\nconst foo = ...\nNavigation";
         let focused = "I think this method have problem.";
-        qualify_focused_element(editable_facts()).unwrap();
+        for control_type in [FocusedControlType::Edit, FocusedControlType::Document] {
+            qualify_focused_element(ElementFacts {
+                control_type,
+                ..editable_facts()
+            })
+            .unwrap();
+            let capture = build_capture(
+                focused.into(),
+                focused.len(),
+                None,
+                true,
+                true,
+                "browser-editable".into(),
+                None,
+            )
+            .unwrap();
 
-        let capture = build_capture(
-            focused.into(),
-            focused.len(),
-            None,
-            true,
-            true,
-            "browser-editable".into(),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(capture.text, focused);
-        for unrelated in page.lines() {
-            assert!(!capture.text.contains(unrelated));
+            assert_eq!(capture.text, focused);
+            for unrelated in page.lines() {
+                assert!(!capture.text.contains(unrelated));
+            }
         }
     }
 
@@ -426,6 +572,24 @@ mod tests {
         );
         assert_eq!(
             qualify_focused_element(broad_ancestor),
+            Err(WindowsCaptureUnavailableReason::NotEditable)
+        );
+    }
+
+    #[test]
+    fn even_an_editable_document_ancestor_cannot_qualify_the_focused_element() {
+        let focused = ElementFacts {
+            control_type: FocusedControlType::Other,
+            ..editable_facts()
+        };
+        let editable_ancestor = ElementFacts {
+            control_type: FocusedControlType::Document,
+            has_text_edit_pattern: true,
+            ..editable_facts()
+        };
+        assert_eq!(qualify_focused_element(editable_ancestor), Ok(()));
+        assert_eq!(
+            qualify_focused_element(focused),
             Err(WindowsCaptureUnavailableReason::NotEditable)
         );
     }

@@ -6,6 +6,7 @@ use super::model::{
     NativeTextRange, WindowsCaptureUnavailableReason as Unavailable,
     WindowsTextSurfaceCaptureResponse, CONTEXT_CHARACTERS_PER_SIDE,
 };
+use crate::global_diagnostics::{record, Details, Outcome, Stage};
 use windows::core::{Interface, BOOL, BSTR};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -24,54 +25,127 @@ use windows::Win32::UI::Accessibility::{
 
 const MAX_BOUNDING_VALUES: usize = 256 * 4;
 
-pub fn capture_active_text_surface(token: String) -> WindowsTextSurfaceCaptureResponse {
-    let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+pub fn capture_active_text_surface(
+    invocation_id: u64,
+    token: String,
+) -> WindowsTextSurfaceCaptureResponse {
+    let initialized_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let initialized = initialized_result.is_ok();
+    record(
+        Some(invocation_id),
+        Stage::ComInitialize,
+        if initialized {
+            Outcome::Succeeded
+        } else {
+            Outcome::Failed
+        },
+        Details {
+            hresult: Some(initialized_result.0),
+            ..Details::default()
+        },
+    );
     if !initialized {
         return unavailable(Unavailable::NativeUiaUnavailable);
     }
-    let result = capture_initialized(token);
+    let result = capture_initialized(invocation_id, token);
     unsafe { CoUninitialize() };
     result.unwrap_or_else(unavailable)
 }
 
-fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureResponse, Unavailable> {
-    let automation: IUIAutomation =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
-            .map_err(|_| Unavailable::NativeUiaUnavailable)?;
-    let element =
-        unsafe { automation.GetFocusedElement() }.map_err(|_| Unavailable::NoFocusedElement)?;
+fn capture_initialized(
+    invocation_id: u64,
+    token: String,
+) -> Result<WindowsTextSurfaceCaptureResponse, Unavailable> {
+    let automation: IUIAutomation = observe_query(
+        invocation_id,
+        Stage::UiaClient,
+        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) },
+        |_| Details::default(),
+    )
+    .map_err(|_| Unavailable::NativeUiaUnavailable)?;
+    let element = observe_query(
+        invocation_id,
+        Stage::FocusedElement,
+        unsafe { automation.GetFocusedElement() },
+        |_| Details::default(),
+    )
+    .map_err(|_| Unavailable::NoFocusedElement)?;
 
-    let process_id =
-        unsafe { element.CurrentProcessId() }.map_err(|_| Unavailable::ElementDisappeared)?;
+    let process_id = observe_query(
+        invocation_id,
+        Stage::OwnProcess,
+        unsafe { element.CurrentProcessId() },
+        |value| Details {
+            value: Some(*value == std::process::id() as i32),
+            ..Details::default()
+        },
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?;
     if process_id == std::process::id() as i32 {
+        record(
+            Some(invocation_id),
+            Stage::Qualification,
+            Outcome::Rejected,
+            Details {
+                reason: Some(Unavailable::OwnProcess),
+                ..Details::default()
+            },
+        );
         return Err(Unavailable::OwnProcess);
     }
-    let protected = unsafe { element.CurrentIsPassword() }
-        .map_err(|_| Unavailable::ElementDisappeared)?
-        .as_bool();
-    let enabled = unsafe { element.CurrentIsEnabled() }
-        .map_err(|_| Unavailable::ElementDisappeared)?
-        .as_bool();
-    let has_keyboard_focus = unsafe { element.CurrentHasKeyboardFocus() }
-        .map_err(|_| Unavailable::ElementDisappeared)?
-        .as_bool();
-    let keyboard_focusable = unsafe { element.CurrentIsKeyboardFocusable() }
-        .map_err(|_| Unavailable::ElementDisappeared)?
-        .as_bool();
-    let control_type = match unsafe { element.CurrentControlType() }
-        .map_err(|_| Unavailable::ElementDisappeared)?
+    let protected = observe_query(
+        invocation_id,
+        Stage::Protected,
+        unsafe { element.CurrentIsPassword() },
+        boolean_details,
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?
+    .as_bool();
+    let enabled = observe_query(
+        invocation_id,
+        Stage::Enabled,
+        unsafe { element.CurrentIsEnabled() },
+        boolean_details,
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?
+    .as_bool();
+    let has_keyboard_focus = observe_query(
+        invocation_id,
+        Stage::KeyboardFocus,
+        unsafe { element.CurrentHasKeyboardFocus() },
+        boolean_details,
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?
+    .as_bool();
+    let keyboard_focusable = observe_query(
+        invocation_id,
+        Stage::KeyboardFocusable,
+        unsafe { element.CurrentIsKeyboardFocusable() },
+        boolean_details,
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?
+    .as_bool();
+    let control_type = match observe_query(
+        invocation_id,
+        Stage::ControlType,
+        unsafe { element.CurrentControlType() },
+        |value| Details {
+            control_type: Some(value.0),
+            ..Details::default()
+        },
+    )
+    .map_err(|_| Unavailable::ElementDisappeared)?
     {
         value if value == UIA_EditControlTypeId => FocusedControlType::Edit,
         value if value == UIA_DocumentControlTypeId => FocusedControlType::Document,
         _ => FocusedControlType::Other,
     };
-    let text_edit_pattern = unsafe {
+    let text_edit_pattern = observe_pattern(invocation_id, Stage::TextEditPattern, unsafe {
         element.GetCurrentPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
-    }
-    .ok();
-    let text_pattern2 =
-        unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }
-            .ok();
+    });
+    let text_pattern2 = observe_pattern(invocation_id, Stage::TextPattern2, unsafe {
+        element.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
+    });
     let text_pattern = text_pattern2
         .as_ref()
         .and_then(|pattern| pattern.cast::<IUIAutomationTextPattern>().ok())
@@ -84,16 +158,42 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
                 .as_ref()
                 .and_then(|pattern| pattern.cast::<IUIAutomationTextPattern>().ok())
         });
-    let value_pattern =
-        unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
-            .ok();
-    let value_pattern_read_only = value_pattern.as_ref().map(|pattern| {
-        unsafe { pattern.CurrentIsReadOnly() }
-            .map(|read_only| read_only.as_bool())
-            .unwrap_or(true)
+    record(
+        Some(invocation_id),
+        Stage::TextPattern,
+        if text_pattern.is_some() {
+            Outcome::Available
+        } else {
+            Outcome::Unavailable
+        },
+        Details {
+            value: Some(text_pattern.is_some()),
+            ..Details::default()
+        },
+    );
+    let value_pattern = observe_pattern(invocation_id, Stage::ValuePattern, unsafe {
+        element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
     });
+    let value_pattern_read_only = value_pattern.as_ref().map(|pattern| {
+        observe_query(
+            invocation_id,
+            Stage::ValueReadOnly,
+            unsafe { pattern.CurrentIsReadOnly() },
+            boolean_details,
+        )
+        .map(|read_only| read_only.as_bool())
+        .unwrap_or(true)
+    });
+    if value_pattern.is_none() {
+        record(
+            Some(invocation_id),
+            Stage::ValueReadOnly,
+            Outcome::Skipped,
+            Details::default(),
+        );
+    }
 
-    qualify_focused_element(ElementFacts {
+    let qualification = qualify_focused_element(ElementFacts {
         own_process: false,
         protected,
         enabled,
@@ -103,7 +203,21 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
         has_text_pattern: text_pattern.is_some(),
         has_text_edit_pattern: text_edit_pattern.is_some(),
         value_pattern_read_only,
-    })?;
+    });
+    record(
+        Some(invocation_id),
+        Stage::Qualification,
+        if qualification.is_ok() {
+            Outcome::Qualified
+        } else {
+            Outcome::Rejected
+        },
+        Details {
+            reason: qualification.err(),
+            ..Details::default()
+        },
+    );
+    qualification?;
 
     let text_pattern = text_pattern.ok_or(Unavailable::UnsupportedTextPattern)?;
     let caret = active_caret(text_pattern2.as_ref());
@@ -128,6 +242,52 @@ fn capture_initialized(token: String) -> Result<WindowsTextSurfaceCaptureRespons
     };
 
     Ok(WindowsTextSurfaceCaptureResponse::Captured { capture })
+}
+
+fn boolean_details(value: &BOOL) -> Details {
+    Details {
+        value: Some(value.as_bool()),
+        ..Details::default()
+    }
+}
+
+fn observe_query<T>(
+    id: u64,
+    stage: Stage,
+    result: windows::core::Result<T>,
+    details: impl FnOnce(&T) -> Details,
+) -> windows::core::Result<T> {
+    match &result {
+        Ok(value) => record(Some(id), stage, Outcome::Succeeded, details(value)),
+        Err(error) => record(
+            Some(id),
+            stage,
+            Outcome::Failed,
+            Details {
+                hresult: Some(error.code().0),
+                ..Details::default()
+            },
+        ),
+    }
+    result
+}
+
+fn observe_pattern<T>(id: u64, stage: Stage, result: windows::core::Result<T>) -> Option<T> {
+    record(
+        Some(id),
+        stage,
+        if result.is_ok() {
+            Outcome::Available
+        } else {
+            Outcome::Unavailable
+        },
+        Details {
+            value: Some(result.is_ok()),
+            hresult: result.as_ref().err().map(|error| error.code().0),
+            ..Details::default()
+        },
+    );
+    result.ok()
 }
 
 fn active_caret(pattern: Option<&IUIAutomationTextPattern2>) -> Option<IUIAutomationTextRange> {

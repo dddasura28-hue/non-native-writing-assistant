@@ -14,6 +14,7 @@ import {
   parseNativeWindowsCaptureResponse,
   type NativeWindowsCaptureResponse,
 } from "./windows-active-text-surface.js";
+import { diagnosticInvocationId, traceGlobalInvocation } from "./global-invocation-diagnostics.js";
 
 export const WINDOWS_GLOBAL_CAPTURE_EVENT = "windows-global-capture";
 export const GLOBAL_ASSISTANT_PRESENTATION_EVENT =
@@ -94,9 +95,17 @@ implements WindowsGlobalShortcutBridge {
   ): Promise<UnlistenFn> {
     return this.#listen<unknown>(WINDOWS_GLOBAL_CAPTURE_EVENT, (event) => {
       const capture = parseWindowsGlobalCaptureEvent(event.payload);
+      traceGlobalInvocation(diagnosticInvocationId(event.payload), "frontend-capture-event",
+        capture === null ? "rejected" : "accepted");
       if (capture !== null) {
         listener(capture);
       }
+    }).then((stop) => {
+      traceGlobalInvocation(null, "capture-listener", "ready");
+      return stop;
+    }, (error: unknown) => {
+      traceGlobalInvocation(null, "capture-listener", "failed");
+      throw error;
     });
   }
 
@@ -106,21 +115,37 @@ implements WindowsGlobalShortcutBridge {
     return this.#listen<unknown>(
       GLOBAL_ASSISTANT_PRESENTATION_EVENT,
       (event) => {
-        if (isFloatingAssistantPresentation(event.payload)) {
-          listener(event.payload);
+        const payload = event.payload;
+        const accepted = isFloatingAssistantPresentation(payload);
+        traceGlobalInvocation(diagnosticInvocationId(payload), "frontend-presentation-event",
+          accepted ? "accepted" : "rejected");
+        if (accepted) {
+          listener(payload);
         }
       },
-    );
+    ).then((stop) => {
+      traceGlobalInvocation(null, "presentation-listener", "ready");
+      return stop;
+    }, (error: unknown) => {
+      traceGlobalInvocation(null, "presentation-listener", "failed");
+      throw error;
+    });
   }
 
   publishPresentation(
     presentation: FloatingAssistantPresentation,
   ): Promise<void> {
+    traceGlobalInvocation(presentation.invocationId, "presentation-event-emit", "attempted");
     return this.#emitTo(
       GLOBAL_ASSISTANT_WINDOW,
       GLOBAL_ASSISTANT_PRESENTATION_EVENT,
       presentation,
-    );
+    ).then(() => {
+      traceGlobalInvocation(presentation.invocationId, "presentation-event-emit", "succeeded");
+    }, (error: unknown) => {
+      traceGlobalInvocation(presentation.invocationId, "presentation-event-emit", "failed");
+      throw error;
+    });
   }
 
   async getRegistrationStatus(): Promise<WindowsGlobalShortcutStatus> {
@@ -287,6 +312,7 @@ export class LatestWindowsGlobalInvocation {
       !Number.isSafeInteger(invocationId) ||
       invocationId <= this.#currentInvocationId
     ) {
+      traceGlobalInvocation(invocationId, "invocation-discarded", "stale");
       return false;
     }
     this.#currentInvocationId = invocationId;
@@ -316,9 +342,11 @@ export class FloatingAssistantPresentationOwner {
         (next.invocationId === current.invocationId &&
           next.presentationRevision <= current.presentationRevision))
     ) {
+      traceGlobalInvocation(next.invocationId, "invocation-discarded", "stale");
       return null;
     }
     this.#current = next;
+    traceGlobalInvocation(next.invocationId, "floating-presentation", "accepted");
     return next;
   }
 }

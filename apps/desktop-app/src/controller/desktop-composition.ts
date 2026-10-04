@@ -25,6 +25,7 @@ import {
   TauriDesktopSecretStore,
 } from "../native/desktop-secret-store.js";
 import { WindowsActiveTextSurfacePort } from "../native/windows-active-text-surface.js";
+import { traceGlobalInvocation } from "../native/global-invocation-diagnostics.js";
 import {
   TauriWindowsGlobalShortcutBridge,
   LatestWindowsGlobalInvocation,
@@ -120,11 +121,15 @@ export function createDesktopControllerWithBridge(
 
   const analyzeCapture = (event: WindowsGlobalCaptureEvent): void => {
     if (disposed || !globalInvocations.begin(event.invocationId)) {
+      if (disposed) {
+        traceGlobalInvocation(event.invocationId, "invocation-discarded", "disposed");
+      }
       return;
     }
     pendingGlobalCapture = null;
     windowsSurface.stage(event.response);
     if (global === null) {
+      traceGlobalInvocation(event.invocationId, "controller-wait", "waiting");
       pendingGlobalCapture = event;
       return;
     }

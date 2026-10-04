@@ -18,6 +18,7 @@ import {
   type ActiveTextSurfacePort,
   type DesktopHostAssistanceMode,
 } from "../host/active-text-surface.js";
+import { traceGlobalInvocation } from "../native/global-invocation-diagnostics.js";
 
 export type GlobalDesktopAssistantStatus =
   | "capturing"
@@ -122,10 +123,12 @@ export class GlobalDesktopAssistantController {
       !Number.isSafeInteger(invocationId) ||
       invocationId <= this.#currentInvocationId
     ) {
+      traceGlobalInvocation(invocationId, "invocation-discarded", this.#disposed ? "disposed" : "stale");
       return "obsolete";
     }
 
     this.#currentInvocationId = invocationId;
+    traceGlobalInvocation(invocationId, "controller-invocation", "started");
     this.#presentationRevision = 0;
     if (options.configurationRequired !== undefined) {
       this.#configurationRequired = options.configurationRequired;
@@ -148,9 +151,11 @@ export class GlobalDesktopAssistantController {
     }
 
     if (this.#disposed || invocationId !== this.#currentInvocationId) {
+      traceGlobalInvocation(invocationId, "invocation-discarded", this.#disposed ? "disposed" : "stale");
       return "obsolete";
     }
     if (capture === null) {
+      traceGlobalInvocation(invocationId, "analysis", "skipped", { reason: "unavailable" });
       this.#presentCurrent(EMPTY_GLOBAL_DESKTOP_ASSISTANCE);
       return "unavailable";
     }
@@ -160,6 +165,7 @@ export class GlobalDesktopAssistantController {
     this.#mode = mode;
 
     if (!/\S/u.test(capture.context.text)) {
+      traceGlobalInvocation(invocationId, "analysis", "skipped", { reason: "empty" });
       this.#presentCurrent(this.#captureState(
         "empty",
         "No analyzable text in the active host",
@@ -167,6 +173,7 @@ export class GlobalDesktopAssistantController {
       return "empty";
     }
     if (capture.context.composition !== null) {
+      traceGlobalInvocation(invocationId, "analysis", "skipped", { reason: "composition-active" });
       this.#presentCurrent(this.#captureState(
         "composition-active",
         "Finish composing text before analysis",
@@ -174,6 +181,7 @@ export class GlobalDesktopAssistantController {
       return "composition-active";
     }
     if (!mode.manualAnalysisAllowed) {
+      traceGlobalInvocation(invocationId, "analysis", "skipped", { reason: "manual-disallowed" });
       this.#presentCurrent(this.#captureState(
         "empty",
         "No analyzable text in the active host",
@@ -181,6 +189,7 @@ export class GlobalDesktopAssistantController {
       return "empty";
     }
     if (this.#configurationRequired) {
+      traceGlobalInvocation(invocationId, "analysis", "skipped", { reason: "configuration-required" });
       this.#presentCurrent(this.#captureState(
         "configuration-required",
         "Configure a provider in the main app to analyze this text",
@@ -198,6 +207,8 @@ export class GlobalDesktopAssistantController {
           this.#engine === engine
         ) {
           this.#presentEngineState(capture, mode, assistance);
+        } else {
+          traceGlobalInvocation(invocationId, "invocation-discarded", this.#disposed ? "disposed" : "stale");
         }
       },
       {
@@ -211,6 +222,9 @@ export class GlobalDesktopAssistantController {
       mode.guardedAcceptAllowed ? capture.editPort : null,
       { suppressAutomaticAnalysis: true },
     );
+    traceGlobalInvocation(invocationId, "analysis", "started", {
+      utf16Length: capture.context.text.length,
+    });
     const outcome = await engine.analyze(capture.context);
 
     if (
@@ -218,6 +232,7 @@ export class GlobalDesktopAssistantController {
       invocationId !== this.#currentInvocationId ||
       this.#engine !== engine
     ) {
+      traceGlobalInvocation(invocationId, "invocation-discarded", this.#disposed ? "disposed" : "stale");
       return "obsolete";
     }
     return outcome?.status ?? "empty";
@@ -354,6 +369,7 @@ export class GlobalDesktopAssistantController {
       return;
     }
     this.#presentationRevision += 1;
+    traceGlobalInvocation(this.#currentInvocationId, "presentation-emitted", presentation.status);
     this.#present(Object.freeze({
       ...presentation,
       invocationId: this.#currentInvocationId,

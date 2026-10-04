@@ -1,3 +1,4 @@
+use crate::global_diagnostics::{record, record_capture, Details, Outcome, Stage};
 use crate::windows::geometry::{
     bottom_right_position, logical_gap_to_physical, place_near_anchor, rescale_physical_size,
     AssistantPhysicalSize, ExternalTextAnchor, PhysicalWorkArea,
@@ -126,23 +127,42 @@ fn configured_shortcut() -> Shortcut {
 }
 
 fn handle_shortcut<R: Runtime>(app: &AppHandle<R>) {
+    record(
+        None,
+        Stage::ShortcutCallback,
+        Outcome::Entered,
+        Details::default(),
+    );
     let state = app.state::<GlobalShortcutState>();
     let invocation_id = state.begin_invocation(|| hide_assistant_window(app));
+    record(
+        Some(invocation_id),
+        Stage::InvocationAllocated,
+        Outcome::Allocated,
+        Details::default(),
+    );
     let app = app.clone();
     std::thread::spawn(move || {
         let state = app.state::<GlobalShortcutState>();
         dispatch_capture_if_current(
             &state,
             invocation_id,
-            || capture_active_windows_text_surface_now(invocation_token(invocation_id)),
+            || {
+                capture_active_windows_text_surface_now(
+                    invocation_id,
+                    invocation_token(invocation_id),
+                )
+            },
             |response| {
                 let payload = GlobalCaptureEvent {
                     invocation_id,
                     response: response.clone(),
                 };
-                let _ = app.emit_to(ASSISTANT_WINDOW_LABEL, CAPTURE_EVENT, &payload);
-                let _ = app.emit_to("main", CAPTURE_EVENT, &payload);
-                apply_window_action(&app, response);
+                let result = app.emit_to(ASSISTANT_WINDOW_LABEL, CAPTURE_EVENT, &payload);
+                record_operation(invocation_id, Stage::NativeEventAssistant, result.is_ok());
+                let result = app.emit_to("main", CAPTURE_EVENT, &payload);
+                record_operation(invocation_id, Stage::NativeEventMain, result.is_ok());
+                apply_window_action(&app, invocation_id, response);
             },
         );
     });
@@ -155,7 +175,30 @@ fn dispatch_capture_if_current(
     complete: impl FnOnce(&WindowsTextSurfaceCaptureResponse),
 ) -> bool {
     let response = capture();
-    state.complete_if_current(invocation_id, || complete(&response))
+    record_capture(invocation_id, &response);
+    let current = state.complete_if_current(invocation_id, || complete(&response));
+    if !current {
+        record(
+            Some(invocation_id),
+            Stage::InvocationDiscarded,
+            Outcome::Stale,
+            Details::default(),
+        );
+    }
+    current
+}
+
+fn record_operation(id: u64, stage: Stage, succeeded: bool) {
+    record(
+        Some(id),
+        stage,
+        if succeeded {
+            Outcome::Succeeded
+        } else {
+            Outcome::Failed
+        },
+        Details::default(),
+    );
 }
 
 fn invocation_token(invocation_id: u64) -> String {
@@ -170,13 +213,28 @@ fn hide_assistant_window<R: Runtime>(app: &AppHandle<R>) {
 
 fn apply_window_action<R: Runtime>(
     app: &AppHandle<R>,
+    invocation_id: u64,
     response: &WindowsTextSurfaceCaptureResponse,
 ) {
     let Some(window) = app.get_webview_window(ASSISTANT_WINDOW_LABEL) else {
+        record_operation(invocation_id, Stage::WindowLookup, false);
         return;
     };
+    record_operation(invocation_id, Stage::WindowLookup, true);
 
     let WindowsTextSurfaceCaptureResponse::Captured { capture } = response else {
+        record(
+            Some(invocation_id),
+            Stage::Position,
+            Outcome::Skipped,
+            Details::default(),
+        );
+        record(
+            Some(invocation_id),
+            Stage::WindowShow,
+            Outcome::Skipped,
+            Details::default(),
+        );
         return;
     };
 
@@ -190,10 +248,33 @@ fn apply_window_action<R: Runtime>(
             .and_then(|anchor| near_anchor_position(&window, anchor, assistant))
             .or_else(|| fallback_position(&window, assistant));
         if let Some(position) = position {
-            let _ = window.set_position(PhysicalPosition::new(position.0, position.1));
+            record(
+                Some(invocation_id),
+                Stage::Position,
+                Outcome::Attempted,
+                Details::default(),
+            );
+            let result = window.set_position(PhysicalPosition::new(position.0, position.1));
+            record_operation(invocation_id, Stage::Position, result.is_ok());
+        } else {
+            record(
+                Some(invocation_id),
+                Stage::Position,
+                Outcome::Unavailable,
+                Details::default(),
+            );
         }
+    } else {
+        record_operation(invocation_id, Stage::Position, false);
     }
-    let _ = window.show();
+    record(
+        Some(invocation_id),
+        Stage::WindowShow,
+        Outcome::Attempted,
+        Details::default(),
+    );
+    let result = window.show();
+    record_operation(invocation_id, Stage::WindowShow, result.is_ok());
 }
 
 fn near_anchor_position<R: Runtime>(
