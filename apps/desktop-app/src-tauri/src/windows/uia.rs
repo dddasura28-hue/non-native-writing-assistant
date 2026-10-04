@@ -1,3 +1,4 @@
+use super::boundary::{verify_range_ownership, VerifiedEditableTextDomain};
 use super::geometry::{
     adjacent_caret_anchor, selection_anchor, AdjacentCaretSide, ExternalTextAnchor,
 };
@@ -16,11 +17,11 @@ use windows::Win32::System::Ole::{
     SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetElemsize,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextEditPattern, IUIAutomationTextPattern,
-    IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
-    UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextEditPatternId, UIA_TextPattern2Id,
-    UIA_TextPatternId, UIA_ValuePatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextEditPattern,
+    IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
+    IUIAutomationValuePattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+    TextUnit_Character, UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextEditPatternId,
+    UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
 };
 
 const MAX_BOUNDING_VALUES: usize = 256 * 4;
@@ -220,28 +221,261 @@ fn capture_initialized(
     qualification?;
 
     let text_pattern = text_pattern.ok_or(Unavailable::UnsupportedTextPattern)?;
-    let caret = active_caret(text_pattern2.as_ref());
-    let selections = read_selections(&text_pattern, caret.is_some())?;
+    let result = capture_verified_surface(
+        invocation_id,
+        &automation,
+        &element,
+        &text_pattern,
+        text_pattern2.as_ref(),
+        value_pattern.as_ref(),
+        token,
+    );
+    record(
+        Some(invocation_id),
+        Stage::BoundaryResult,
+        if result.is_ok() {
+            Outcome::Verified
+        } else {
+            Outcome::Rejected
+        },
+        Details {
+            reason: result.as_ref().err().copied(),
+            ..Details::default()
+        },
+    );
+    result
+}
+
+fn read_value(id: u64, pattern: &IUIAutomationValuePattern) -> Result<String, Unavailable> {
+    let value = observe_query(
+        id,
+        Stage::ValuePatternLength,
+        unsafe { pattern.CurrentValue() },
+        |value| Details {
+            utf16_length: Some(value.len()),
+            ..Details::default()
+        },
+    )
+    .map_err(|_| Unavailable::AmbiguousEditableDomain)?;
+    String::try_from(value).map_err(|_| Unavailable::AmbiguousEditableDomain)
+}
+
+fn capture_verified_surface(
+    id: u64,
+    automation: &IUIAutomation,
+    element: &IUIAutomationElement,
+    text_pattern: &IUIAutomationTextPattern,
+    text_pattern2: Option<&IUIAutomationTextPattern2>,
+    value_pattern: Option<&IUIAutomationValuePattern>,
+    token: String,
+) -> Result<WindowsTextSurfaceCaptureResponse, Unavailable> {
+    record(
+        Some(id),
+        Stage::EditableDomain,
+        Outcome::Attempted,
+        Details::default(),
+    );
+    // Qualification already rejected read-only ValuePatterns. TextEdit alone
+    // does not independently prove ownership of the provider's document text.
+    let value_pattern = value_pattern.ok_or(Unavailable::AmbiguousEditableDomain)?;
+    let value = read_value(id, value_pattern)?;
+    let range = observe_query(
+        id,
+        Stage::EditableDomain,
+        unsafe { text_pattern.DocumentRange() },
+        |_| Details::default(),
+    )
+    .map_err(|_| Unavailable::AmbiguousEditableDomain)?;
+    if !range_owned_by_focused(automation, element, &range)? {
+        return Err(Unavailable::AmbiguousEditableDomain);
+    }
+    let provider_text = range_text(&range)?;
+    record(
+        Some(id),
+        Stage::TextDomainLength,
+        Outcome::Succeeded,
+        Details {
+            utf16_length: Some(super::model::utf16_len(&provider_text)),
+            ..Details::default()
+        },
+    );
+    let proof = VerifiedEditableTextDomain::verify(Some(&value), &provider_text);
+    record(
+        Some(id),
+        Stage::DomainConsistency,
+        if proof.is_ok() {
+            Outcome::Matched
+        } else {
+            Outcome::Mismatch
+        },
+        Details::default(),
+    );
+    let domain = VerifiedProviderDomain {
+        automation,
+        element,
+        range,
+        text: proof?,
+    };
+    domain
+        .validate_range(&domain.range)
+        .map_err(|_| Unavailable::AmbiguousEditableDomain)?;
+    let caret = active_caret(text_pattern2);
+    record(
+        Some(id),
+        Stage::CaretAvailable,
+        if caret.is_some() {
+            Outcome::Available
+        } else {
+            Outcome::Unavailable
+        },
+        Details {
+            value: Some(caret.is_some()),
+            ..Details::default()
+        },
+    );
+    if let Some(caret) = &caret {
+        domain.validate_range(caret)?;
+        if !is_degenerate(caret)? {
+            return Err(Unavailable::UnsupportedSelection);
+        }
+    }
+    let selections = read_selections(text_pattern, caret.is_some())?;
+    for selection in &selections {
+        domain.validate_range(selection)?;
+    }
 
     let capture = match selections.as_slice() {
         [selection] if !is_degenerate(selection)? => {
-            capture_exact_selection(selection, caret.as_ref(), token)?
+            capture_exact_selection(&domain, selection, caret.as_ref(), token)?
         }
         [selection] => {
+            if let Some(caret) = &caret {
+                if compare_endpoints(
+                    selection,
+                    TextPatternRangeEndpoint_Start,
+                    caret,
+                    TextPatternRangeEndpoint_Start,
+                )? != 0
+                {
+                    return Err(Unavailable::UnsupportedSelection);
+                }
+            }
             let anchor = caret.as_ref().unwrap_or(selection);
-            capture_around_caret(anchor, true, true, token)?
+            capture_around_caret(&domain, anchor, true, true, token)?
         }
         [] => {
-            let anchor = caret.as_ref().ok_or(Unavailable::SelectionUnavailable)?;
-            capture_around_caret(anchor, false, true, token)?
+            let anchor = caret.as_ref().ok_or(Unavailable::MissingCaret)?;
+            capture_around_caret(&domain, anchor, false, true, token)?
         }
         _ => {
             let anchor = caret.as_ref().ok_or(Unavailable::MultipleSelection)?;
-            capture_around_caret(anchor, false, false, token)?
+            capture_around_caret(&domain, anchor, false, false, token)?
         }
     };
 
+    // Detect provider mutation during native range/geometry work. Never return
+    // text from a previously verified but now inconsistent live UIA domain.
+    let current_value = read_value(id, value_pattern)?;
+    let current_text = range_text(&domain.range)?;
+    let currentness = domain.text.verify_current(&current_value, &current_text);
+    record(
+        Some(id),
+        Stage::DomainConsistency,
+        if currentness.is_ok() {
+            Outcome::Matched
+        } else {
+            Outcome::Mismatch
+        },
+        Details::default(),
+    );
+    currentness?;
     Ok(WindowsTextSurfaceCaptureResponse::Captured { capture })
+}
+
+struct VerifiedProviderDomain<'a> {
+    automation: &'a IUIAutomation,
+    element: &'a IUIAutomationElement,
+    range: IUIAutomationTextRange,
+    text: VerifiedEditableTextDomain<'a>,
+}
+
+impl VerifiedProviderDomain<'_> {
+    fn validate_range(&self, range: &IUIAutomationTextRange) -> Result<(), Unavailable> {
+        let same = range_owned_by_focused(self.automation, self.element, range)?;
+        verify_range_ownership(
+            same,
+            compare_endpoints(
+                range,
+                TextPatternRangeEndpoint_Start,
+                &self.range,
+                TextPatternRangeEndpoint_Start,
+            )?,
+            compare_endpoints(
+                range,
+                TextPatternRangeEndpoint_End,
+                &self.range,
+                TextPatternRangeEndpoint_End,
+            )?,
+            compare_endpoints(
+                range,
+                TextPatternRangeEndpoint_Start,
+                range,
+                TextPatternRangeEndpoint_End,
+            )?,
+        )
+    }
+
+    fn offset(
+        &self,
+        point: &IUIAutomationTextRange,
+        endpoint: windows::Win32::UI::Accessibility::TextPatternRangeEndpoint,
+    ) -> Result<usize, Unavailable> {
+        self.validate_range(point)?;
+        let prefix = unsafe { self.range.Clone() }.map_err(|_| Unavailable::ElementDisappeared)?;
+        unsafe { prefix.MoveEndpointByRange(TextPatternRangeEndpoint_End, point, endpoint) }
+            .map_err(|_| Unavailable::UnsupportedSelection)?;
+        self.validate_range(&prefix)?;
+        let text = range_text(&prefix)?;
+        let end = super::model::utf16_len(&text);
+        self.text
+            .validate_range_text(NativeTextRange { start: 0, end }, &text)?;
+        Ok(end)
+    }
+
+    fn validate_text(
+        &self,
+        range: &IUIAutomationTextRange,
+        text: &str,
+    ) -> Result<NativeTextRange, Unavailable> {
+        let offsets = NativeTextRange {
+            start: self.offset(range, TextPatternRangeEndpoint_Start)?,
+            end: self.offset(range, TextPatternRangeEndpoint_End)?,
+        };
+        self.text.validate_range_text(offsets, text)?;
+        Ok(offsets)
+    }
+}
+
+fn range_owned_by_focused(
+    automation: &IUIAutomation,
+    element: &IUIAutomationElement,
+    range: &IUIAutomationTextRange,
+) -> Result<bool, Unavailable> {
+    let owner =
+        unsafe { range.GetEnclosingElement() }.map_err(|_| Unavailable::UnsupportedSelection)?;
+    unsafe { automation.CompareElements(&owner, element) }
+        .map(|same| same.as_bool())
+        .map_err(|_| Unavailable::UnsupportedSelection)
+}
+
+fn compare_endpoints(
+    range: &IUIAutomationTextRange,
+    endpoint: windows::Win32::UI::Accessibility::TextPatternRangeEndpoint,
+    other: &IUIAutomationTextRange,
+    other_endpoint: windows::Win32::UI::Accessibility::TextPatternRangeEndpoint,
+) -> Result<i32, Unavailable> {
+    unsafe { range.CompareEndpoints(endpoint, other, other_endpoint) }
+        .map_err(|_| Unavailable::UnsupportedSelection)
 }
 
 fn boolean_details(value: &BOOL) -> Details {
@@ -318,18 +552,27 @@ fn read_selections(
 }
 
 fn capture_exact_selection(
+    domain: &VerifiedProviderDomain<'_>,
     selection: &IUIAutomationTextRange,
     caret: Option<&IUIAutomationTextRange>,
     token: String,
 ) -> Result<super::model::WindowsTextSurfaceCapture, Unavailable> {
-    let geometry =
-        bounding_rectangle_values(selection).and_then(|values| selection_anchor(&values));
     let text = range_text(selection)?;
     let text_len = super::model::utf16_len(&text);
-    let cursor = caret
-        .and_then(|range| offset_within(selection, range, TextPatternRangeEndpoint_Start).ok())
-        .filter(|offset| *offset <= text_len)
-        .unwrap_or(text_len);
+    let offsets = domain.validate_text(selection, &text)?;
+    let cursor = if let Some(caret) = caret {
+        let point = domain.offset(caret, TextPatternRangeEndpoint_Start)?;
+        if point < offsets.start || point > offsets.end {
+            return Err(Unavailable::UnsupportedSelection);
+        }
+        point - offsets.start
+    } else {
+        // A truthful contiguous selection is sufficient; no insertion point is
+        // fabricated for a ValuePattern-only control.
+        text_len
+    };
+    let geometry =
+        bounding_rectangle_values(selection).and_then(|values| selection_anchor(&values));
     build_capture(
         text,
         cursor,
@@ -345,14 +588,12 @@ fn capture_exact_selection(
 }
 
 fn capture_around_caret(
+    domain: &VerifiedProviderDomain<'_>,
     caret_range: &IUIAutomationTextRange,
     can_observe_selection: bool,
     include_geometry: bool,
     token: String,
 ) -> Result<super::model::WindowsTextSurfaceCapture, Unavailable> {
-    let geometry = include_geometry
-        .then(|| caret_anchor(caret_range))
-        .flatten();
     let window = unsafe { caret_range.Clone() }.map_err(|_| Unavailable::ElementDisappeared)?;
     unsafe {
         window.MoveEndpointByRange(
@@ -387,9 +628,53 @@ fn capture_around_caret(
     }
     .map_err(|_| Unavailable::ElementDisappeared)?;
 
-    let cursor = offset_within(&window, caret_range, TextPatternRangeEndpoint_Start)?;
+    // UIA movement is provider-wide. Clamp by endpoints to the already proven
+    // focused domain, not by searching or trimming the returned text.
+    if compare_endpoints(
+        &window,
+        TextPatternRangeEndpoint_Start,
+        &domain.range,
+        TextPatternRangeEndpoint_Start,
+    )? < 0
+    {
+        unsafe {
+            window.MoveEndpointByRange(
+                TextPatternRangeEndpoint_Start,
+                &domain.range,
+                TextPatternRangeEndpoint_Start,
+            )
+        }
+        .map_err(|_| Unavailable::UnsupportedSelection)?;
+    }
+    if compare_endpoints(
+        &window,
+        TextPatternRangeEndpoint_End,
+        &domain.range,
+        TextPatternRangeEndpoint_End,
+    )? > 0
+    {
+        unsafe {
+            window.MoveEndpointByRange(
+                TextPatternRangeEndpoint_End,
+                &domain.range,
+                TextPatternRangeEndpoint_End,
+            )
+        }
+        .map_err(|_| Unavailable::UnsupportedSelection)?;
+    }
+    domain.validate_range(&window)?;
+    let text = range_text(&window)?;
+    let offsets = domain.validate_text(&window, &text)?;
+    let point = domain.offset(caret_range, TextPatternRangeEndpoint_Start)?;
+    if point < offsets.start || point > offsets.end {
+        return Err(Unavailable::MissingCaret);
+    }
+    let cursor = point - offsets.start;
+    let geometry = include_geometry
+        .then(|| caret_anchor(domain, caret_range))
+        .flatten();
     build_capture(
-        range_text(&window)?,
+        text,
         cursor,
         None,
         can_observe_selection,
@@ -399,12 +684,16 @@ fn capture_around_caret(
     )
 }
 
-fn caret_anchor(caret: &IUIAutomationTextRange) -> Option<ExternalTextAnchor> {
+fn caret_anchor(
+    domain: &VerifiedProviderDomain<'_>,
+    caret: &IUIAutomationTextRange,
+) -> Option<ExternalTextAnchor> {
     adjacent_range(caret, AdjacentCaretSide::Previous)
-        .and_then(|range| anchor_from_adjacent_range(&range, AdjacentCaretSide::Previous))
+        .and_then(|range| anchor_from_adjacent_range(domain, &range, AdjacentCaretSide::Previous))
         .or_else(|| {
-            adjacent_range(caret, AdjacentCaretSide::Next)
-                .and_then(|range| anchor_from_adjacent_range(&range, AdjacentCaretSide::Next))
+            adjacent_range(caret, AdjacentCaretSide::Next).and_then(|range| {
+                anchor_from_adjacent_range(domain, &range, AdjacentCaretSide::Next)
+            })
         })
 }
 
@@ -431,10 +720,13 @@ fn adjacent_range(
 }
 
 fn anchor_from_adjacent_range(
+    domain: &VerifiedProviderDomain<'_>,
     range: &IUIAutomationTextRange,
     side: AdjacentCaretSide,
 ) -> Option<ExternalTextAnchor> {
+    domain.validate_range(range).ok()?;
     let text = range_text(range).ok()?;
+    domain.validate_text(range, &text).ok()?;
     let values = bounding_rectangle_values(range)?;
     adjacent_caret_anchor(&values, &text, side)
 }
@@ -486,18 +778,6 @@ fn is_degenerate(range: &IUIAutomationTextRange) -> Result<bool, Unavailable> {
     }
     .map(|comparison| comparison == 0)
     .map_err(|_| Unavailable::ElementDisappeared)
-}
-
-fn offset_within(
-    container: &IUIAutomationTextRange,
-    point: &IUIAutomationTextRange,
-    endpoint: windows::Win32::UI::Accessibility::TextPatternRangeEndpoint,
-) -> Result<usize, Unavailable> {
-    let prefix = unsafe { container.Clone() }.map_err(|_| Unavailable::ElementDisappeared)?;
-    unsafe { prefix.MoveEndpointByRange(TextPatternRangeEndpoint_End, point, endpoint) }
-        .map_err(|_| Unavailable::ElementDisappeared)?;
-    let text = unsafe { prefix.GetText(-1) }.map_err(|_| Unavailable::ElementDisappeared)?;
-    Ok(text.len())
 }
 
 fn range_text(range: &IUIAutomationTextRange) -> Result<String, Unavailable> {

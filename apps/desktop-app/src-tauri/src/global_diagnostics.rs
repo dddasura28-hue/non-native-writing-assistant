@@ -20,6 +20,12 @@ pub enum Stage {
     ValuePattern,
     ValueReadOnly,
     Qualification,
+    EditableDomain,
+    ValuePatternLength,
+    TextDomainLength,
+    DomainConsistency,
+    CaretAvailable,
+    BoundaryResult,
     #[cfg(any(debug_assertions, test))]
     Capture,
     #[cfg(any(debug_assertions, test))]
@@ -53,6 +59,12 @@ impl Stage {
             Self::ValuePattern => "value-pattern",
             Self::ValueReadOnly => "value-current-is-read-only",
             Self::Qualification => "editable-qualification",
+            Self::EditableDomain => "editable-domain",
+            Self::ValuePatternLength => "value-pattern-length",
+            Self::TextDomainLength => "text-domain-length",
+            Self::DomainConsistency => "domain-consistency",
+            Self::CaretAvailable => "caret-available",
+            Self::BoundaryResult => "boundary-result",
             Self::Capture => "capture",
             Self::Geometry => "geometry",
             Self::NativeEventAssistant => "native-event-assistant",
@@ -80,6 +92,9 @@ pub enum Outcome {
     Attempted,
     Skipped,
     Stale,
+    Matched,
+    Mismatch,
+    Verified,
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -98,6 +113,9 @@ impl Outcome {
             Self::Attempted => "attempted",
             Self::Skipped => "skipped",
             Self::Stale => "stale",
+            Self::Matched => "matched",
+            Self::Mismatch => "mismatch",
+            Self::Verified => "verified",
         }
     }
 }
@@ -240,6 +258,32 @@ mod tests {
                 }
             )[0],
             "[global-debug] invocation=7 stage=capture result=unavailable reason=ProtectedField"
+        );
+    }
+
+    #[test]
+    fn boundary_diagnostics_are_only_lengths_flags_and_safe_status_codes() {
+        assert_eq!(format_line(Some(7), Stage::ValuePatternLength, Outcome::Succeeded,
+            Details { utf16_length: Some(24), ..Details::default() }),
+            "[global-debug] invocation=7 stage=value-pattern-length result=succeeded utf16_length=24");
+        assert_eq!(
+            format_line(
+                Some(7),
+                Stage::DomainConsistency,
+                Outcome::Mismatch,
+                Details::default()
+            ),
+            "[global-debug] invocation=7 stage=domain-consistency result=mismatch"
+        );
+        assert_eq!(format_line(Some(7), Stage::BoundaryResult, Outcome::Rejected,
+            Details { reason: Some(WindowsCaptureUnavailableReason::ValueTextDomainMismatch), ..Details::default() }),
+            "[global-debug] invocation=7 stage=boundary-result result=rejected reason=ValueTextDomainMismatch");
+        let response = WindowsTextSurfaceCaptureResponse::Unavailable {
+            reason: WindowsCaptureUnavailableReason::ValueTextDomainMismatch,
+        };
+        assert_eq!(
+            capture_lines(7, &response)[1],
+            "[global-debug] invocation=7 stage=geometry result=skipped"
         );
     }
 }

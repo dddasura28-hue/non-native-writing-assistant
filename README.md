@@ -54,6 +54,19 @@ For a Windows global-shortcut regression, run the native development shell and p
 
 These diagnostics run only with Rust debug assertions and a Vite development build (ordinary automated test mode is quiet). Release builds emit none. Formatters accept only fixed stages/status codes, invocation IDs, boolean capability flags, numeric control types/HRESULTs, and UTF-16 lengths. They never serialize captures, events, exceptions, text, credentials, native handles, tokens, or geometry coordinates. An early failure stops the existing path and reports its safe capture reason; later stages are absent or explicitly skipped. No qualification, capability, capture, analysis, or window behavior changes for diagnostics. The terminal's last native stage distinguishes failed qualification/capture from event, position, or show failures; the WebView traces identify rejected events and stale invocations.
 
+Windows Editable Text Boundary v1 additionally verifies exact writable ValuePattern value/TextPattern domain agreement before any bounded global capture. A qualified control can still be unavailable if its provider exposes broad page text, no truthful insertion point, foreign ranges, or only TextEditPattern without independent value evidence. No substring extraction, placeholder fallback, or browser-wide capture is attempted. Development diagnostics report `editable-domain`, `value-pattern-length`, `text-domain-length`, `domain-consistency`, `caret-available`, and `boundary-result`, with lengths and fixed safe codes only.
+
+For manual boundary validation, run `pnpm dev:desktop` and invoke `Ctrl+Alt+Space` once for each row below. A provider need not be configured to check native capture; the app can report configuration required without a live API call. Include `A😀B`, Chinese/mixed text, and exact multiline text where applicable. For every invocation record: **qualified? boundary verified? capture succeeded? unrelated text present? geometry available? safe unavailable reason?** Check that an unavailable invocation clears previous text/geometry and recovery works on the next valid field. These are validation instructions, not measured compatibility results.
+
+| Manual target | Boundary/capture expectation to verify |
+| --- | --- |
+| Windows Notepad | Editable Document remains qualified; matching writable value/domain and owned ranges permit capture. |
+| Edge/Chrome normal input | Exact matching value/domain and truthful caret permit capture; broad or mismatched provider text is unavailable. |
+| Edge/Chrome textarea | Same strict checks; preserve multiline text and UTF-16 caret/selection exactly. |
+| contenteditable, if available | Capture only with independent matching writable value and owned ranges; TextEdit-only providers are unavailable. |
+| Empty input with placeholder | Empty value plus empty domain and truthful caret may capture empty text; placeholder never becomes Source. |
+| Password field | Qualification fails; no text, geometry, or analysis; safe reason is `protected-field`. |
+
 ## Local AI development
 
 The API key belongs only to the gateway process. It must never be placed in Obsidian settings, plugin source, manifests, or build variables. `.env.example` documents the two supported environment names, but the gateway reads them directly from its process environment and does not load `.env` files.

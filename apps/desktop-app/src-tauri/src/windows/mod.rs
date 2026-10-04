@@ -1,3 +1,4 @@
+mod boundary;
 pub mod geometry;
 mod model;
 #[cfg(test)]

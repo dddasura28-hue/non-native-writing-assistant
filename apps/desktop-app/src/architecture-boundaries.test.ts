@@ -109,8 +109,23 @@ describe("desktop dependency boundaries", () => {
     );
     const uiaSource = readFileSync(resolve(rustRoot, "uia.rs"), "utf8");
     expect(uiaSource).not.toMatch(
-      /TreeWalker|GetParentElement|FindFirst|FindAll|DocumentRange/,
+      /TreeWalker|GetParentElement|FindFirst|FindAll|FindText/,
     );
+    // A provider domain is read only to verify the actual focused value. It
+    // cannot become an unverified surrounding-text or page-content fallback.
+    expect(uiaSource.match(/\.DocumentRange\(\)/gu)).toHaveLength(1);
+    const verifiedCapture = uiaSource.slice(
+      uiaSource.indexOf("fn capture_verified_surface("),
+      uiaSource.indexOf("struct VerifiedProviderDomain"),
+    );
+    const ownershipCheck = verifiedCapture.indexOf("range_owned_by_focused(");
+    const valueProof = verifiedCapture.indexOf(
+      "VerifiedEditableTextDomain::verify(",
+    );
+    const boundedCapture = verifiedCapture.indexOf("capture_around_caret(");
+    expect(ownershipCheck).toBeGreaterThanOrEqual(0);
+    expect(valueProof).toBeGreaterThan(ownershipCheck);
+    expect(boundedCapture).toBeGreaterThan(valueProof);
     const shortcutSource = readFileSync(
       resolve(
         repositoryRoot,

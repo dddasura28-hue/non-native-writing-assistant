@@ -17,6 +17,7 @@ import {
 } from "../controller/global-desktop-assistant-controller.js";
 import {
   WindowsActiveTextSurfacePort,
+  parseNativeWindowsCaptureResponse,
   type NativeWindowsCaptureResponse,
 } from "./windows-active-text-surface.js";
 
@@ -111,6 +112,45 @@ async function flush(): Promise<void> {
 }
 
 describe("WindowsActiveTextSurfacePort", () => {
+  it.each([
+    "ambiguous-editable-domain",
+    "value-text-domain-mismatch",
+    "missing-caret",
+    "unsupported-selection",
+  ] as const)(
+    "accepts safe %s failure without starting analysis or retaining text/geometry",
+    async (reason) => {
+      const response = parseNativeWindowsCaptureResponse({
+        status: "unavailable", reason,
+      });
+      expect(response).toEqual({ status: "unavailable", reason });
+      expect(parseNativeWindowsCaptureResponse({
+        status: "unavailable", reason,
+        capture: captured("Unrelated page text").capture,
+      })).toBeNull();
+      const port = new WindowsActiveTextSurfacePort();
+      port.stage(captured("Old field", {
+        anchor: {
+          physicalX: 10, physicalY: 20, physicalWidth: 1, physicalHeight: 18,
+          confidence: "approximate",
+        },
+      }));
+      port.stage(response!);
+      const provider = new ImmediateProvider();
+      const presentations: GlobalDesktopAssistantPresentation[] = [];
+      const controller = new GlobalDesktopAssistantController(
+        port, provider, (presentation) => presentations.push(presentation),
+      );
+      await expect(controller.analyzeActiveTextSurface(1)).resolves.toBe("unavailable");
+      expect(provider.snapshots).toEqual([]);
+      expect(port.lastUnavailableReason).toBe(reason);
+      expect(presentations.at(-1)).toMatchObject({ status: "no-host", sourceText: null });
+      expect(JSON.stringify(presentations.at(-1))).not.toContain("Old field");
+      expect(JSON.stringify(presentations.at(-1))).not.toContain("physicalX");
+      controller.dispose();
+    },
+  );
+
   it("maps the minimal native payload into an ActiveTextSurfaceCapture", async () => {
     const port = portWith(captured());
 

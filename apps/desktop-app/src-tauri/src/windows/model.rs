@@ -16,6 +16,10 @@ pub enum WindowsCaptureUnavailableReason {
     MultipleSelection,
     ElementDisappeared,
     NativeUiaUnavailable,
+    AmbiguousEditableDomain,
+    ValueTextDomainMismatch,
+    MissingCaret,
+    UnsupportedSelection,
 }
 
 pub const CONTEXT_CHARACTERS_PER_SIDE: i32 = 8_192;

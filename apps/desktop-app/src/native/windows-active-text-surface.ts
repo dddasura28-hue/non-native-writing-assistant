@@ -15,7 +15,11 @@ export type WindowsCaptureUnavailableReason =
   | "selection-unavailable"
   | "multiple-selection"
   | "element-disappeared"
-  | "native-uia-unavailable";
+  | "native-uia-unavailable"
+  | "ambiguous-editable-domain"
+  | "value-text-domain-mismatch"
+  | "missing-caret"
+  | "unsupported-selection";
 
 interface NativeTextRange {
   readonly start: number;
@@ -235,6 +239,10 @@ const WINDOWS_UNAVAILABLE_REASONS: ReadonlySet<string> = new Set([
   "multiple-selection",
   "element-disappeared",
   "native-uia-unavailable",
+  "ambiguous-editable-domain",
+  "value-text-domain-mismatch",
+  "missing-caret",
+  "unsupported-selection",
 ]);
 
 /** Consumes snapshots captured by the native shortcut before any app window is shown. */
